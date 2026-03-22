@@ -224,8 +224,19 @@ def get_model_vram_need(cfg: Dict[str, Any], physical_name: str) -> float:
 
 
 def kill_vram_fast():
+    """
+    Kill ONLY processes managed by Allama (active_servers).
+    Does NOT kill external vllm/llama processes - that was the bug.
+    """
     logger.info("Aggressive VRAM shutdown initiated...")
     pids_killed = []
+
+    # First, get list of known PIDs from active_servers
+    known_pids = set()
+    with global_lock:
+        for name, server in active_servers.items():
+            known_pids.add(server["pid"])
+
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-compute-apps=pid,process_name", "--format=csv,noheader,nounits"],
@@ -248,25 +259,31 @@ def kill_vram_fast():
             procname = parts[1].strip().lower()
 
             if pid == ALLAMA_PID:
+                logger.debug(f"Skipping ALLAMA itself (PID {ALLAMA_PID})")
                 continue
 
-            if any(x in procname for x in ["vllm", "llama"]):
-                logger.info(f"Killing PID {pid} ({procname})")
-                try:
-                    kill_process_tree(pid, timeout=1)
-                    pids_killed.append(pid)
-                    logger.info(f"Killed PID {pid} {procname}")
-                except Exception as e:
-                    logger.error(f"Error killing {pid}: {e}")
+            # BUG FIX: Only kill if we know this process (active_servers)
+            if pid not in known_pids:
+                logger.debug(f"Skipping external process {pid} ({procname}) - not managed by Allama")
+                continue
+
+            # Now actually kill it
+            logger.info(f"Killing managed PID {pid} ({procname})")
+            try:
+                kill_process_tree(pid, timeout=1)
+                pids_killed.append(pid)
+                logger.info(f"Killed managed PID {pid} {procname}")
+            except Exception as e:
+                logger.error(f"Error killing {pid}: {e}")
 
         if pids_killed:
-            logger.info(f"Shutdown complete: {len(pids_killed)} processes")
+            logger.info(f"Shutdown complete: {len(pids_killed)} ALLAMA-managed processes")
             time.sleep(2)
             gpus = get_free_gpu_memory()
             freegb = sum(g["free_gb"] for g in gpus)
             logger.info(f"VRAM Free after shutdown: {freegb:.1f}GB")
         else:
-            logger.warning("No backend found to shutdown")
+            logger.info("No ALLAMA-managed processes to shutdown")
     except Exception as e:
         logger.error(f"Error in killvramfast: {e}")
         import traceback
@@ -639,10 +656,13 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         raise
 
     subprocess_env = os.environ.copy()
-    if backend == "llama.cpp":
+    # Bug fix: CUDA_VISIBLE_DEVICES quebra tensor_parallelism
+    # Para vLLM com TP>1, NÃO definir CVD - deixe ele ver todas as GPUs
+    # Para llama.cpp com -ngl -1, também não é necessário - ele usa todas as GPUs
+    # Só definimos CVD explicitamente para llama.cpp single-GPU específicas
+    if backend == "llama.cpp" and int(cfg.get("tensor_parallel", "1")) == 1:
         subprocess_env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    else:
-        subprocess_env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    # else: leave system GPU discovery untouched
 
     proc = None
     try:
@@ -718,9 +738,9 @@ def health_monitor():
                             to_unload.append(physical_name)
 
                 for physical_name in to_unload:
-                    with global_lock:
-                        if physical_name in active_servers:
-                            shutdown_server(physical_name, reason="idle", fast=True)
+                    # Bug fix: não usar with global_lock aqui - shutdown_server já adquire o lock internamente
+                    if physical_name in active_servers:
+                        shutdown_server(physical_name, reason="idle", fast=True)
 
                 # Health monitor can now be woken up on shutdown
                 _health_monitor_running.wait(HEALTH_CHECK_INTERVAL)
@@ -1118,15 +1138,15 @@ def main():
         global running
         if not running:
             logger.critical("Second signal received, force kill")
-            # Stop health monitor first
-            _health_monitor_running.set()
+            # Stop health monitor first - use .clear() to break the is_set() loop
+            _health_monitor_running.clear()
             time.sleep(0.5)
             os.kill(os.getpid(), signal.SIGKILL)
             return
         logger.info("Shutdown requested...")
         running = False
-        # Signal health monitor to stop
-        _health_monitor_running.set()
+        # Signal health monitor to stop - use .clear() to break the is_set() loop
+        _health_monitor_running.clear()
         with global_lock:
             for name in list(active_servers.keys()):
                 server = active_servers.get(name)
@@ -1141,11 +1161,12 @@ def main():
         time.sleep(1)
         os._exit(0)
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
+    # Signal handler uses .clear() to stop the monitor - loop is "while is_set()"
     _health_monitor_thread = threading.Thread(target=health_monitor, daemon=True)
     _health_monitor_thread.start()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     uvicorn.run(app, host="127.0.0.1", port=ALLAMA_PORT)
 
