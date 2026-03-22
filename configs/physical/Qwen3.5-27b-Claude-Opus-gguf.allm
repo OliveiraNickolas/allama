@@ -1,0 +1,11 @@
+# Physical model: Qwen3.5-27b-Claude-Opus-gguf (llama.cpp backend)
+
+backend = "llama.cpp"
+model = "/home/nick/AI/Models/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF/Qwen3.5-27B.Q8_0.gguf"
+mmproj = "/home/nick/AI/Models/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF/Qwen3.5-27B.BF16-mmproj.gguf"
+n_ctx = "40960"
+n_batch = "1024"
+n_gpu_layers = "-1"
+n_threads = "32"
+
+extra_args = ["--chat-template", "chatml"]

@@ -1,0 +1,11 @@
+# Physical model: Qwen3.5-35b-Uncensored-gguf (llama.cpp backend)
+
+backend = "llama.cpp"
+model = "/home/nick/AI/Models/Qwen3.5-35B-Uncensored/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-Q6_K.gguf"
+mmproj = "/home/nick/AI/Models/Qwen3.5-35B-Uncensored/mmproj-Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+n_ctx = "40960"
+n_batch = "1024"
+n_gpu_layers = "-1"
+n_threads = "32"
+
+extra_args = ["--chat-template", "chatml"]
