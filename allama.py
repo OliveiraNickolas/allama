@@ -136,25 +136,19 @@ root_logger.addHandler(file_handler)
 root_logger.addHandler(console_handler)
 root_logger.setLevel(logging.INFO)
 
-# Suppress verbose uvicorn access logs - we have custom logging
-# Suppress verbose uvicorn access logs - we have custom logging
-uv_logger = logging.getLogger("uvicorn.access")
-uv_logger.setLevel(logging.WARNING)
-# Also suppress httpx access logs - we log manually before sending requests
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
+# Suppress uvicorn logs - we have custom logging
 logger = logging.getLogger("Allama")
 
-# Configurar todos os loggers do uvicorn para usar o mesmo formatter
-for logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.info"]:
-    uv_logger = logging.getLogger(logger_name)
+# Configure uvicorn loggers to use same formatters, but only show errors
+for uv_logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.info"]:
+    uv_logger = logging.getLogger(uv_logger_name)
     uv_logger.handlers = []
     uv_logger.addHandler(console_handler)
     uv_logger.addHandler(file_handler)
-    uv_logger.setLevel(logging.INFO)
-    uv_logger.propagate = False
+    uv_logger.setLevel(logging.ERROR)  # Only errors, not access logs
 
-
+# Also suppress httpx access logs - we log manually before sending requests
+logging.getLogger("httpx").setLevel(logging.ERROR)
 # ==============================================================================
 # GLOBAL STATE
 # ==============================================================================
@@ -707,7 +701,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
             f"continuando e esperando que o backend gerencie memória."
         )
 
-    logger.info(f"📥 Loading {displayname} ({backend})")
+    logger.info(f"⏳ Loading {displayname} ({backend})")
 
     if backend == "vllm":
         cmd, port, gpu_id = build_vllm_cmd(physicalname)
