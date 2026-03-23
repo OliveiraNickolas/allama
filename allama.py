@@ -136,6 +136,13 @@ root_logger.addHandler(file_handler)
 root_logger.addHandler(console_handler)
 root_logger.setLevel(logging.INFO)
 
+# Suppress verbose uvicorn access logs - we have custom logging
+# Suppress verbose uvicorn access logs - we have custom logging
+uv_logger = logging.getLogger("uvicorn.access")
+uv_logger.setLevel(logging.WARNING)
+# Also suppress httpx access logs - we log manually before sending requests
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger("Allama")
 
 # Configurar todos os loggers do uvicorn para usar o mesmo formatter
@@ -337,7 +344,7 @@ def build_vllm_cmd(physical_name: str) -> tuple[list, int, int]:
         gpu_allocation[physical_name] = gpu_id
     else:
         gpu_id = gpu_allocation[physical_name]
-    logger.info(f"🎯 {physical_name} -> GPU {gpu_id}")
+    logger.info(f"🎯 {physical_name} ➡ GPU {gpu_id}")
 
     cmd = [
         "vllm", "serve", cfg["path"],
@@ -374,7 +381,7 @@ def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
     if gpu_id is None:
         gpu_id = get_best_gpu()
         gpu_allocation[physical_name] = gpu_id
-    logger.info(f"🎯 {physical_name} -> GPU {gpu_id}")
+    logger.info(f"🎯 {physical_name} ➡ GPU {gpu_id}")
 
     cmd = [
         LLAMA_CPP_PATH,
@@ -525,7 +532,7 @@ class LoadingSpinner:
             elapsed = time.time() - self._start_time
             sys.stdout.write("\r" + " " * 80 + "\r")
             sys.stdout.flush()
-            status = "OK" if success else "FAIL"
+            status = "👍 OK" if success else "❌ FAIL"
             logger.info(f"{status} {self.message} [{elapsed:.0f}s]")
         else:
             sys.stdout.write("\r" + " " * 80 + "\r")
@@ -585,7 +592,7 @@ async def wait_for_model_ready(
                         for signal in signals:
                             if signal in line:
                                 spinner.stop(success=True)
-                                logger.info(f"{displayname} ready: {signal}")
+                                logger.info(f"🎉 {displayname} ready: {signal}")
                                 await asyncio.sleep(1)
                                 return True
             except Exception as e:
