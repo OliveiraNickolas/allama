@@ -99,9 +99,12 @@ def format_user_agent(ua: str) -> str:
         return "curl"
     if "wget" in ua_lower:
         return "wget"
-    # OpenWebUI uses a plain Chrome user-agent when accessed via browser
-    if "Mozilla/5.0" in ua and ("Linux" in ua or "X11" in ua) and "Chrome/1" in ua and "Safari/537.36" in ua:
-        return "OpenWebUI (Browser)"
+    # OpenWebUI accesses via standard Chrome browser
+    if "Mozilla/5.0" in ua and "Chrome/" in ua and "Safari/537.36" in ua:
+        return "OpenWebUI (Chrome)"
+    # OpenWebUI Safari (mobile)
+    if "Mozilla/5.0" in ua and "Version/26.3" in ua and "Safari/605.1" in ua:
+        return "OpenWebUI (Safari)"
     # Truncate longer agents
     if len(ua) > 50:
         return ua[:47] + "..."
