@@ -99,6 +99,9 @@ def format_user_agent(ua: str) -> str:
         return "curl"
     if "wget" in ua_lower:
         return "wget"
+    # OpenWebUI uses a plain Chrome user-agent when accessed via browser
+    if "Mozilla/5.0" in ua and ("Linux" in ua or "X11" in ua) and "Chrome/1" in ua and "Safari/537.36" in ua:
+        return "OpenWebUI (Browser)"
     # Truncate longer agents
     if len(ua) > 50:
         return ua[:47] + "..."
@@ -862,7 +865,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️ {format_user_agent(user_agent)})")
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})")
 
     if model_name not in LOGICAL_MODELS:
         return JSONResponse(
@@ -965,7 +968,7 @@ async def messages(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️ {format_user_agent(user_agent)})")
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})")
 
     if model_name not in LOGICAL_MODELS:
         # Check if we can auto-switch to a loaded model
