@@ -1037,7 +1037,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
 
             ready = await wait_for_model_ready(
                 proc, port, backend, logfilepath, displayname,
-                timeout=180, log_start_position=log_start_position,
+                timeout=300, log_start_position=log_start_position,
             )
 
             if not ready:
@@ -1051,7 +1051,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                         logger.warning(f"💥 VRAM allocation failed on GPU {current_gpu_id}, retrying with adjusted config...")
                         raise RuntimeError("VRAM allocation failed")
                     raise RuntimeError(f"{displayname} startup failed (code {returncode})")
-                raise RuntimeError(f"{displayname} not ready after 180s")
+                raise RuntimeError(f"{displayname} not ready after 300s")
 
             logger.info(f"🚀 {displayname} loaded and ready on GPU {current_gpu_id}")
             return port
@@ -1168,7 +1168,9 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})")
+    logger.info(
+        f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})"
+    )
 
     if model_name not in LOGICAL_MODELS:
         return JSONResponse(
@@ -1203,8 +1205,9 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         else:
             body.pop(key, None)
 
-    # Models with thinking/reasoning capability need enable_thinking=False
-    if "instruct" in model_name.lower() or "heretic" in model_name.lower():
+    # Always send enable_thinking=false if the logical model config has it
+    # This is the user's explicit choice - we must honor it
+    if logical_cfg.get("enable_thinking") is False:
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
     logger.debug(f"{model_name} -> {physical_name}:{port} ({backend})")
@@ -1215,7 +1218,10 @@ async def chat_completions(request: Request, body: dict = Body(...)):
             async def empty_stream():
                 yield "data: [DONE]\n\n"
             return StreamingResponse(empty_stream(), media_type="text/event-stream")
-        return JSONResponse(status_code=200, content={"choices": [{"message": {"content": ""}}]})
+        return JSONResponse(
+            status_code=200,
+            content={"choices": [{"message": {"content": ""}}]},
+        )
 
     client = await get_http_client()
     try:
@@ -1246,8 +1252,22 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
         else:
+            # ---- LOG 2: confirmação antes do POST (de novo só Heretic) ----
+            if model_name.lower() == "qwen3.5-9b-heretic":
+                logger.info("HERETIC_REQUEST_URL %s", url)
+            # ---------------------------------------------------------------
+
             resp = await client.post(url, json=body)
             if resp.status_code == 400:
+                error_body = await resp.aread()
+                error_detail = (
+                    error_body.decode()
+                    if isinstance(error_body, bytes)
+                    else str(error_body)
+                )
+                logger.error(
+                    f"vLLM 400 Error for {model_name}: {error_detail}"
+                )
                 logger.warning("vLLM 400 - returning empty response")
                 return JSONResponse(
                     status_code=200,

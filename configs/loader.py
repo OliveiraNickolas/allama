@@ -2,26 +2,29 @@
 Config loader for Allama .all configuration files.
 Each physical and logical model has its own .all file.
 """
-from pathlib import Path
-from typing import Dict, Any, List, Set
 import logging
-import os
-import re
+from pathlib import Path
+from typing import Any, Dict
 
 logger = logging.getLogger("Wrapper")
 
 
 def parse_all_file(content: str) -> Dict[str, Any]:
+    import json
     result = {}
     current_section = None
+    lines = content.split('\n')
+    i = 0
 
-    for line in content.split('\n'):
-        line = line.strip()
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
 
         if not line or line.startswith('#'):
             continue
 
-        if line.startswith('[') and line.endswith(']'):
+        # Section header [section_name] — but NOT a list value
+        if line.startswith('[') and line.endswith(']') and '=' not in line:
             section_name = line[1:-1].strip()
             result[section_name] = {}
             current_section = result[section_name]
@@ -32,17 +35,21 @@ def parse_all_file(content: str) -> Dict[str, Any]:
             key = key.strip()
             value = value.strip()
 
-            # Suporte a listas: ["a", "b", "c"]
-            if value.startswith('[') and value.endswith(']'):
-                import json
+            # Suporte a listas multi-linha: value starts with '[' but may not end with ']' yet
+            if value.startswith('['):
+                # Accumulate lines until we close the bracket
+                accumulated = value
+                while not accumulated.rstrip().endswith(']') and i < len(lines):
+                    accumulated += ' ' + lines[i].strip()
+                    i += 1
                 try:
-                    parsed = json.loads(value)
+                    parsed = json.loads(accumulated)
                     if current_section is not None:
                         current_section[key] = parsed
                     else:
                         result[key] = parsed
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse list value for key '{key}': {value}")
+                    logger.warning(f"Failed to parse list value for key '{key}': {accumulated}")
                 continue
 
             # Remove aspas
