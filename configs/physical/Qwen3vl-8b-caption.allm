@@ -15,5 +15,5 @@ extra_args = [
 	"--generation-config", "vllm",
 	"--limit-mm-per-prompt.video", "0",
 	"--async-scheduling",
-	"--disable-custom-all-reduce",
+	"--disable-custom-all-reduce"
 ]
