@@ -1478,8 +1478,8 @@ if RICH_AVAILABLE:
         }
         word   = list("ALLAMA")
         starts = [0, 6, 12, 18, 24, 30]
-        height = 6    # 5 main rows + 1 shadow spill row
-        width  = 36   # 35 chars + 1 for rightmost shadow
+        height = 5    # exactly the 5 pixel rows — no spill row
+        width  = 36
         canvas = [[0] * width for _ in range(height)]
         for ch, col in zip(word, starts):
             for r, row in enumerate(CHARS[ch]):
@@ -1487,29 +1487,17 @@ if RICH_AVAILABLE:
                     if px == "█":
                         canvas[r][col + c] = 1
             if ch == "L":
+                # Horizontal-only shadow (+1 col, same row) → no floating bars below
                 for r, row in enumerate(CHARS[ch]):
                     for c, px in enumerate(row):
                         if px == "█":
-                            sr, sc = r + 1, col + c + 1
-                            if sr < height and sc < width and canvas[sr][sc] == 0:
-                                canvas[sr][sc] = 2
+                            sc = col + c + 1
+                            if sc < width and canvas[r][sc] == 0:
+                                canvas[r][sc] = 2
         return [
             "".join("█" if v == 1 else "▒" if v == 2 else " " for v in row)
             for row in canvas
         ]
-
-    # ── Menu bar (Mac System 7 top bar) ────────────────────────────────────
-    menu_tbl = Table.grid(expand=True, padding=(0, 1))
-    menu_tbl.add_column(ratio=1)
-    menu_tbl.add_column(ratio=1)
-    menu_tbl.add_column(ratio=1)
-    menu_tbl.add_row(
-        Text("◆  File  Edit  Special", style=CLG),
-        Text("ALLAMA", style=f"bold {CW}", justify="center"),
-        Text("ALL LLM PROXY", style=CMG, justify="right"),
-    )
-    console.print(Panel(menu_tbl, box=box.SQUARE, border_style=CMG,
-                        padding=(0, 0), width=W))
 
     # ── Logo window ────────────────────────────────────────────────────────
     logo_rows = build_logo()
