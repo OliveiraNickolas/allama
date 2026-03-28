@@ -140,7 +140,7 @@ ALLAMA_LOG_DIR = Path(os.environ.get("ALLAMA_LOG_DIR", "./logs"))
 CONFIG_DIR = Path(os.environ.get("ALLAMA_CONFIG_DIR", "./configs"))
 PATH_TO_ALLAMA = os.environ.get("PATH_TO_ALLAMA", str(SCRIPT_DIR.parent))
 LLAMA_CPP_PATH = os.environ.get(
-    "LLAMA_CPP_PATH", str(SCRIPT_DIR.parent.parent / "llama.cpp" / "build" / "bin" / "llama-server")
+    "LLAMA_CPP_PATH", str(SCRIPT_DIR.parent.parent / "AI" / "llama.cpp" / "build" / "bin" / "llama-server")
 )
 
 # Logging setup
@@ -1244,9 +1244,8 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         else:
             body.pop(key, None)
 
-    # Always send enable_thinking=false if the logical model config has it
-    # This is the user's explicit choice - we must honor it
-    if logical_cfg.get("enable_thinking") is False:
+    # Disable thinking for Instruct models or when explicitly set in config
+    if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
     logger.debug(f"{model_name} -> {physical_name}:{port} ({backend})")

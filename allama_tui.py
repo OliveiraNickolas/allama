@@ -4,7 +4,7 @@
 ╠═╣║  ║  ╠═╣║║║╠═╣   ║ ║╣ ╠╦╝║║║║║║║╠═╣║
 ╩ ╩╩═╝╩═╝╩ ╩╩ ╩╩ ╩   ╩ ╚═╝╩╚═╩ ╩╩╝╚╝╩ ╩╩═╝
 
-ALLAMA TERMINAL INTERFACE  ·  PHOSPHOR EDITION
+ALLAMA TERMINAL INTERFACE  ·
 Retro TUI for Allama LLM Proxy
 """
 
