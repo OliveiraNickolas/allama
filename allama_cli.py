@@ -325,6 +325,54 @@ def _repl(model: str):
         print("\nBye!")
 
 
+def cmd_backend_logs(args):
+    """Tail the log of the currently running backend process."""
+    if not _is_running():
+        print("Allama is not running.")
+        return
+
+    data = _get("/v1/ps")
+    servers = (data or {}).get("servers", [])
+    alive = [s for s in servers if s.get("alive")]
+
+    if not alive:
+        print("No backend is currently loaded.")
+        return
+
+    # Filter by name if provided
+    if args.name:
+        matches = [s for s in alive if args.name.lower() in s["name"].lower()]
+        if not matches:
+            print(f"No running backend matching '{args.name}'.")
+            print("Running backends:")
+            for s in alive:
+                print(f"  · {s['name']} ({s['backend']})")
+            return
+        target = matches[0]
+    elif len(alive) == 1:
+        target = alive[0]
+    else:
+        print("Multiple backends running — specify one:")
+        for s in alive:
+            print(f"  · {s['name']} ({s['backend']})  →  allama backend logs {s['name']}")
+        return
+
+    logfile = target.get("logfile", "")
+    if not logfile or not Path(logfile).exists():
+        print(f"Log file not found for '{target['name']}'.")
+        return
+
+    print(f"● {target['name']} ({target['backend']})  —  {logfile}\n")
+    try:
+        follow = args.follow if hasattr(args, "follow") else True
+        if follow:
+            subprocess.run(["tail", "-f", logfile])
+        else:
+            subprocess.run(["tail", f"-{args.lines}", logfile])
+    except KeyboardInterrupt:
+        pass
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
     # Internal: running as watchdog daemon
@@ -375,6 +423,17 @@ def main():
     p_run = sub.add_parser("run", help="Chat with a model interactively")
     p_run.add_argument("model", help="Logical model name (e.g. Qwen3.5:27b-Instruct)")
     p_run.set_defaults(func=cmd_run)
+
+    # backend
+    p_backend = sub.add_parser("backend", help="Backend server commands")
+    backend_sub = p_backend.add_subparsers(dest="backend_command", metavar="<subcommand>")
+    backend_sub.required = True
+
+    p_bl = backend_sub.add_parser("logs", help="Tail the log of the running backend")
+    p_bl.add_argument("-f", "--follow", action="store_true", help="Follow log output (default: true)")
+    p_bl.add_argument("-n", "--lines", type=int, default=50, metavar="N", help="Lines to show (default: 50)")
+    p_bl.add_argument("name", nargs="?", default=None, help="Backend name (optional if only one is running)")
+    p_bl.set_defaults(func=cmd_backend_logs)
 
     args = parser.parse_args()
     args.func(args)
