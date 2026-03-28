@@ -280,6 +280,24 @@ async def health():
     }
 
 
+@app.get("/v1/ps")
+async def ps():
+    """Return active backend servers with their log file paths."""
+    with state.global_lock:
+        servers = [
+            {
+                "name": name,
+                "backend": srv.get("backend", "unknown"),
+                "port": srv.get("port"),
+                "pid": srv.get("pid"),
+                "logfile": str(srv.get("logfile", "")),
+                "alive": srv["process"].poll() is None,
+            }
+            for name, srv in state.active_servers.items()
+        ]
+    return {"servers": servers}
+
+
 # ==============================================================================
 # BANNER
 # ==============================================================================
