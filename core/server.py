@@ -577,7 +577,7 @@ def show_banner():
 
     _console_probe = Console()
     _term_w  = _console_probe.width
-    W        = min(max(_term_w - 1, 40), 130)
+    W        = min(max(_term_w - 4, 40), 130)  # -4 = shadow (2) + margin (2)
     _narrow  = _term_w < 72   # mobile / narrow terminal
     # Logo brand colors (pixel art identity — unchanged)
     C_RED    = "#e52529"

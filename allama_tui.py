@@ -107,6 +107,7 @@ Screen {
     color: #1a1408;
     /* Creates the "floating window" shadow: 3 cols right, 1 row bottom */
     padding: 0 3 1 0;
+    align: center middle;
 }
 
 /* ─── BOOT ──────────────────────────────────────────────────────── */
@@ -114,6 +115,7 @@ Screen {
     background: #d0c4a8;
     align: center middle;
     width: 100%;
+    max-width: 130;
     height: 100%;
 }
 
@@ -143,6 +145,7 @@ Screen {
     border-title-align: center;
     background: #d0c4a8;
     width: 100%;
+    max-width: 130;
     height: 100%;
 }
 
