@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "allama-server",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["allama_cli.py", "serve", "--verbose"],
+      "port": 9000,
+      "autoPort": false
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 # Logical model: Qwen3.5:27b-Code
+name = "Qwen3.5:27b-Code"
 physical = "Qwen3.5-27b"
 
 [sampling]

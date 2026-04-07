@@ -1,4 +1,5 @@
 # Logical model: Qwen3.5:35b-Uncensored
+name = "Qwen3.5:35b-Uncensored"
 physical = "Qwen3.5-35b-Uncensored-gguf"
 
 [sampling]

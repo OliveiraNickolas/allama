@@ -118,7 +118,7 @@ def load_models_from_configs(
                     config = parse_all_file(content)
 
                     if "backend" in config:
-                        model_name = cfg_file.stem
+                        model_name = config.get("name") or cfg_file.stem
                         physical_models[model_name] = config
                         logger.debug(f"  Loaded physical model: {model_name}")
                     else:
@@ -138,7 +138,7 @@ def load_models_from_configs(
                     config = parse_all_file(content)
 
                     if "physical" in config:
-                        model_name = cfg_file.stem
+                        model_name = config.get("name") or cfg_file.stem
                         physical_ref = config["physical"]
 
                         if physical_ref not in physical_models:
