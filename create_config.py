@@ -504,6 +504,7 @@ def generate_logical_allm(
     """Gera o conteúdo do arquivo .allm lógico."""
     lines = [
         f"# Logical model: {logical_name}",
+        f'name = "{logical_name}"',
         f'physical = "{physical_name}"',
         "",
         "[sampling]",
@@ -700,8 +701,8 @@ def main():
 
     # Deriva nome base lógico do nome físico (ex: "Qwen3.5-9b" → "Qwen3.5:9b")
     import re
-    m = re.match(r"^([A-Za-z0-9._]+?)[-.](\d+[bBmM][^-]*)(?:-.*)?$", phys_name)
-    logical_base = f"{m.group(1)}:{m.group(2)}" if m else phys_name
+    m = re.search(r"-(\d+\.?\d*[bBmM])", phys_name)
+    logical_base = phys_name[:m.start()] + ":" + phys_name[m.start() + 1:] if m else phys_name
 
     logical_configs = []
     for variant_key, variant_sampling in variants.items():
@@ -760,7 +761,7 @@ def main():
         print(green(f"  ✔ {phys_file}"))
 
     for log_name, log_content in logical_configs:
-        log_file = log_dir / f"{log_name}.allm"
+        log_file = log_dir / f"{log_name.replace(':', '-')}.allm"
         if log_file.exists() and not auto:
             if not ask_yes(f"  {log_file} já existe — sobrescrever?", auto):
                 print(yellow(f"  Lógico '{log_name}' não sobrescrito."))
