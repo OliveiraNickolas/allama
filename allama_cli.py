@@ -355,9 +355,12 @@ def cmd_run(args):
                 "max_tokens": metadata.get("max_tokens", 2048),
             }
 
+            # Always save to disk (so server can reload)
+            save_dynamic_models(dynamic_models)
             if persist:
-                save_dynamic_models(dynamic_models)
-                print(f"💾 Saved {logical_model_name} to dynamic_models.json")
+                print(f"✅ Registered & persisted {logical_model_name}")
+            else:
+                print(f"✅ Registered {logical_model_name} (session only)")
 
         model = logical_model_name
     elif on_keyword and provider:
