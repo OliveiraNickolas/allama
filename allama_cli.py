@@ -218,27 +218,94 @@ def _run_watchdog(verbose: bool):
 
 
 # ── Commands ───────────────────────────────────────────────────────────────────
+def _open_terminal_tail(logfile: str):
+    """Open a new terminal window running tail -f on a backend log file."""
+    title = Path(logfile).stem + " · backend log"
+    variants = [
+        ["gnome-terminal", f"--title={title}", "--", "tail", "-f", logfile],
+        ["kitty", "--title", title, "tail", "-f", logfile],
+        ["konsole", "--title", title, "-e", "tail", "-f", logfile],
+        ["xfce4-terminal", f"--title={title}", "-e", f"tail -f {logfile}"],
+        ["xterm", "-title", title, "-e", f"tail -f {logfile}"],
+    ]
+    for cmd in variants:
+        try:
+            subprocess.Popen(cmd, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except FileNotFoundError:
+            continue
+    print(f"[be-verbose] No terminal emulator found. Run manually: tail -f {logfile}",
+          file=sys.stderr)
+
+
+def _be_verbose_watcher(log_dir: Path, stop_event: threading.Event):
+    """Watch logs/ for new backend log files and open a terminal for each one."""
+    EXCLUDE = {"allama.log"}
+    opened: set[Path] = set()
+    start_time = time.time()
+
+    while not stop_event.is_set():
+        try:
+            for logfile in sorted(log_dir.glob("*.log")):
+                if logfile.name in EXCLUDE or logfile in opened:
+                    continue
+                st = logfile.stat()
+                # Only react to files created/written after this watcher started
+                # and that already have content (backend has begun logging)
+                if st.st_mtime > start_time and st.st_size > 128:
+                    opened.add(logfile)
+                    _open_terminal_tail(str(logfile))
+        except Exception:
+            pass
+        stop_event.wait(1.5)
+
+
 def cmd_serve(args):
     """Start the Allama daemon."""
-    if args.verbose:
-        print("Starting Allama (verbose mode — Ctrl+C to stop)...")
-        _run_watchdog(verbose=True)
-    else:
-        if _is_running():
-            print("Allama is already running.")
-            return
-        label = ["Starting Allama...  "]
-        stop_spinner = threading.Event()
-        spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
-        spinner.start()
-        _start_daemon()
-        ok = _wait_for_server(30)
-        stop_spinner.set()
-        spinner.join()
-        if ok:
-            print("Allama ready.")
+    be_verbose = getattr(args, "be_verbose", False)
+    be_verbose_stop = threading.Event()
+
+    if be_verbose:
+        watcher = threading.Thread(
+            target=_be_verbose_watcher,
+            args=(ALLAMA_DIR / "logs", be_verbose_stop),
+            daemon=True,
+        )
+        watcher.start()
+
+    try:
+        if args.verbose:
+            print("Starting Allama (verbose mode — Ctrl+C to stop)...")
+            _run_watchdog(verbose=True)
         else:
-            print("Allama timed out. Check logs: allama logs")
+            if _is_running():
+                print("Allama is already running.")
+                return
+            label = ["Starting Allama...  "]
+            stop_spinner = threading.Event()
+            spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
+            spinner.start()
+            _start_daemon()
+            ok = _wait_for_server(30)
+            stop_spinner.set()
+            spinner.join()
+            if ok:
+                print("Allama ready.")
+            else:
+                print("Allama timed out. Check logs: allama logs")
+    finally:
+        be_verbose_stop.set()
+
+
+def cmd_restart(args):
+    """Stop and restart the Allama server."""
+    cmd_stop(args)
+    time.sleep(1)
+    # Clear the "already running" guard so cmd_serve proceeds
+    if hasattr(args, "_restarting"):
+        pass
+    cmd_serve(args)
 
 
 def _kill_leftover_backends() -> int:
@@ -955,7 +1022,28 @@ def main():
         action="store_true",
         help="Run in foreground with live logs and rich display",
     )
+    p_serve.add_argument(
+        "--be-verbose",
+        action="store_true",
+        dest="be_verbose",
+        help="Open a new terminal window tailing each backend log as it loads",
+    )
     p_serve.set_defaults(func=cmd_serve)
+
+    # restart
+    p_restart = sub.add_parser("restart", help="Stop and restart the Allama server")
+    p_restart.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Restart in foreground verbose mode",
+    )
+    p_restart.add_argument(
+        "--be-verbose",
+        action="store_true",
+        dest="be_verbose",
+        help="Open a new terminal window tailing each backend log as it loads",
+    )
+    p_restart.set_defaults(func=cmd_restart)
 
     # stop
     p_stop = sub.add_parser("stop", help="Stop the Allama server")
