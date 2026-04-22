@@ -1,6 +1,6 @@
-name = "Qwopus3.5:4B-Instruct-Reasoning"
-physical = "Qwopus3.5-4B-abliterated"
-enable_thinking = false
+name = "Qwen3.6:35b"
+physical = "Qwen3.6-35B-A3B-fp8"
+# thinking ON, general — Qwen3.6 official
 
 [sampling]
 temperature = 1.0

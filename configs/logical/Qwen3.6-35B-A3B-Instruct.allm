@@ -1,5 +1,5 @@
-name = "Qwopus3.5:4B-Instruct"
-physical = "Qwopus3.5-4B-abliterated"
+name = "Qwen3.6:35b-Instruct"
+physical = "Qwen3.6-35B-A3B-fp8"
 enable_thinking = false
 
 [sampling]

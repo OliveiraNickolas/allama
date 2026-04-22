@@ -23,6 +23,7 @@ from core.process import (
     save_backend_pid,
 )
 from core.error_detector import ErrorDetector, tail_file
+from core.bootstrap import BootstrapDetector
 
 
 # ==============================================================================
@@ -233,6 +234,68 @@ async def wait_for_model_ready(
 
 
 # ==============================================================================
+# AUTO-FIX HELPERS
+# ==============================================================================
+def apply_auto_fix(physicalname: str, cfg: dict, error_analysis) -> bool:
+    """Apply auto-fix to config based on error analysis. Returns True if applied."""
+    if not error_analysis or not error_analysis.auto_fix_available:
+        return False
+
+    action = error_analysis.auto_fix_action
+    attempt_count = state.auto_fix_attempt_count.get(physicalname, 0)
+
+    if attempt_count >= 3:
+        logger.warning(f"⚠️  Auto-fix max attempts (3) reached for {physicalname}, skipping")
+        return False
+
+    if action == "reduce_ubatch_size":
+        current = int(cfg.get("max_num_seqs", "8"))
+        new = max(2, current // 2)
+        if new < current:
+            cfg["max_num_seqs"] = str(new)
+            state.auto_fix_attempt_count[physicalname] = attempt_count + 1
+            logger.info(f"🔧 Auto-fix: reduced max_num_seqs {current} → {new} (attempt {attempt_count + 1}/3)")
+            return True
+
+    elif action == "reduce_batch_params":
+        # Try reducing ubatch-size first, then n_batch
+        if "max_num_seqs" in cfg:
+            current = int(cfg["max_num_seqs"])
+            new = max(2, current // 2)
+            if new < current:
+                cfg["max_num_seqs"] = str(new)
+                state.auto_fix_attempt_count[physicalname] = attempt_count + 1
+                logger.info(f"🔧 Auto-fix: reduced max_num_seqs {current} → {new}")
+                return True
+
+    elif action == "reduce_context_length":
+        current = int(cfg.get("max_model_len", "262144"))
+        new = max(8192, current // 2)
+        if new < current:
+            cfg["max_model_len"] = str(new)
+            state.auto_fix_attempt_count[physicalname] = attempt_count + 1
+            logger.info(f"🔧 Auto-fix: reduced max_model_len {current} → {new}")
+            return True
+
+    elif action == "increase_defrag_threshold":
+        # Add or increase defrag threshold in extra_args
+        extra_args = cfg.get("extra_args", [])
+        for i, arg in enumerate(extra_args):
+            if arg == "--defrag-thold" and i + 1 < len(extra_args):
+                try:
+                    current_val = float(extra_args[i + 1])
+                    new_val = max(0.01, current_val / 2)
+                    extra_args[i + 1] = str(new_val)
+                    state.auto_fix_attempt_count[physicalname] = attempt_count + 1
+                    logger.info(f"🔧 Auto-fix: increased defrag from {current_val} → {new_val}")
+                    return True
+                except ValueError:
+                    pass
+
+    return False
+
+
+# ==============================================================================
 # MODEL LOADING
 # ==============================================================================
 async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = None, gpu_id: Optional[int] = None):
@@ -300,6 +363,35 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
     """Internal implementation of model loading."""
     NEEDGB = get_model_vram_need(cfg, physicalname)
     logger.info(f"🧮 {displayname} needs {NEEDGB:.1f}GB VRAM")
+
+    # Bootstrap: Calibrate model if hardware profile available
+    calib = None
+    if state.hardware_profile and physicalname not in state.bootstrap_calibrations:
+        try:
+            logger.info(f"📊 Calibrating {displayname}...")
+            calib = await BootstrapDetector.calibrate_for_model(
+                physical_name=physicalname,
+                model_size_gb=NEEDGB,
+                hardware_profile=state.hardware_profile,
+                config=cfg,
+            )
+            state.bootstrap_calibrations[physicalname] = calib
+
+            logger.info(
+                f"   Recommended: TP={calib.recommended_tp}, "
+                f"ubatch={calib.recommended_ubatch_size}, "
+                f"cache={calib.recommended_cache_dtype}, "
+                f"confidence={calib.confidence}"
+            )
+
+            if calib.warnings:
+                for warn in calib.warnings:
+                    logger.warning(f"   ⚠️  {warn}")
+
+        except Exception as e:
+            logger.debug(f"Calibration failed: {e}, continuing with static config")
+    else:
+        calib = state.bootstrap_calibrations.get(physicalname)
 
     # Determine if this model needs more than one GPU can provide.
     # We compare NEEDGB against the usable capacity of the best single GPU
@@ -402,9 +494,9 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
             raise
 
         if backend == "vllm":
-            cmd, port, current_gpu_id = build_vllm_cmd(physicalname, skip_gpu=skip_gpu, gpu_id=gpu_id)
+            cmd, port, current_gpu_id = build_vllm_cmd(physicalname, skip_gpu=skip_gpu, gpu_id=gpu_id, calib=calib)
         else:
-            cmd, port, current_gpu_id = build_llama_cmd(physicalname, gpu_id=gpu_id)
+            cmd, port, current_gpu_id = build_llama_cmd(physicalname, gpu_id=gpu_id, calib=calib)
 
         tp_from_cmd = 1
         try:
@@ -485,6 +577,17 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                         for suggestion in error_analysis.suggestions:
                             logger.error(f"   • {suggestion}")
                         state.last_error_analysis[physicalname] = error_analysis
+
+                        # Tentar auto-fix se disponível
+                        if apply_auto_fix(physicalname, cfg, error_analysis):
+                            logger.info(f"♻️  Retrying with auto-fix... (attempt {attempt + 2}/{max_attempts})")
+                            # Limpar processo e continuar para próximo attempt
+                            with state.global_lock:
+                                if state.active_servers.get(physicalname):
+                                    state.active_servers.pop(physicalname, None)
+                                    state.server_idle_time.pop(physicalname, None)
+                            continue
+                        # Sem auto-fix disponível, reportar erro e falhar
 
                     # Fallback antigo: VRAM detection
                     if "Free memory" in log_content and "less than desired" in log_content:

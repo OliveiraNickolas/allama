@@ -29,6 +29,11 @@ httpx_client = None
 last_error_analysis: Dict[str, Any] = {}  # {physical_name: ErrorAnalysis}
 auto_fix_attempt_count: Dict[str, int] = {}  # {physical_name: attempt_count}
 
+# Hardware detection & calibration (bootstrap)
+hardware_profile: Any = None  # HardwareProfile or None
+hardware_detected_at: Any = None  # ISO timestamp
+bootstrap_calibrations: Dict[str, Any] = {}  # {physical_name: CalibrationResult}
+
 # ==============================================================================
 # PORT ALLOCATION
 # ==============================================================================
