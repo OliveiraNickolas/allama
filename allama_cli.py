@@ -66,6 +66,26 @@ def _limit_line_width(spinner_part: str, content: str, time_part: str, term_widt
     return line
 
 
+def _run_simple_spinner(stop_event: threading.Event, label_ref: list):
+    """Single-line braille spinner for allama run."""
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    start = time.time()
+    i = 0
+    last_len = 0
+    while not stop_event.is_set():
+        elapsed = time.time() - start
+        frame = frames[i % len(frames)]
+        label = label_ref[0]
+        line = f"  {frame}  {label}  [{elapsed:.1f}s]"
+        sys.stdout.write(f"\r{' ' * last_len}\r{line}")
+        sys.stdout.flush()
+        last_len = len(line)
+        time.sleep(0.08)
+        i += 1
+    sys.stdout.write(f"\r{' ' * last_len}\r")
+    sys.stdout.flush()
+
+
 def _run_spinner(stop_event: threading.Event, label_ref: list):
     """3-row parallax Andes spinner with running llama."""
     import shutil
@@ -590,9 +610,9 @@ def cmd_run(args):
 
     already_running = _is_running()
 
-    label = ["Loading model...  " if already_running else "Starting Allama...  "]
+    label = ["Loading model..." if already_running else "Starting Allama..."]
     stop_spinner = threading.Event()
-    spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
+    spinner = threading.Thread(target=_run_simple_spinner, args=(stop_spinner, label), daemon=True)
     spinner.start()
 
     if not already_running:
@@ -602,7 +622,7 @@ def cmd_run(args):
             spinner.join()
             print("Allama failed to start. Check logs: allama logs")
             sys.exit(1)
-        label[0] = "Loading model...  "
+        label[0] = "Loading model..."
 
     # Verify model exists
     data = _get("/v1/models")
@@ -639,42 +659,85 @@ def cmd_run(args):
 
 def _print_repl_header(console, model: str):
     from rich import box as _box
+    from rich.align import Align
+    from rich.console import Group
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
 
-    # Lisa-16 CLI palette (dark terminal compatible)
-    C_FG     = "#b0c4d0"
-    C_DIM    = "#485e6e"
-    C_ACCENT = "#5aaecf"
-    C_BORDER = "#1a4a8a"
-    C_OK     = "#3a7850"
-    W = 68
+    # Same warm cream / teal palette as the main server banner
+    C_BG     = "#e8dfc8"
+    C_SCREEN = "#d0c4a8"
+    C_FG     = "#1a1408"
+    C_DIM    = "#6a5a48"
+    C_ACCENT = "#007878"
+    C_BORDER = "#008888"
+    W = 64
+    _S = f"on {C_BG}"
 
-    body = Table.grid(expand=True, padding=(0, 1))
-    body.add_column()
+    def section(name: str) -> Text:
+        t = Text()
+        t.append("[ ", style=C_DIM)
+        t.append(name, style=f"bold {C_ACCENT}")
+        t.append(" ]", style=C_DIM)
+        return t
 
-    info = Text()
-    info.append("  MODEL  ▸  ", style=f"bold {C_DIM}")
-    info.append(model, style=f"bold {C_ACCENT}")
-    info.append("    PORT  ▸  ", style=f"bold {C_DIM}")
-    info.append(str(ALLAMA_PORT), style=f"bold {C_OK}")
-    body.add_row(info)
+    # Session info row
+    session_tbl = Table.grid(expand=True, padding=(0, 1))
+    session_tbl.add_column()
+    info = Text(style=_S)
+    info.append("  model  ", style=f"{C_DIM} on {C_BG}")
+    info.append("▸  ", style=f"{C_DIM} on {C_BG}")
+    info.append(model, style=f"bold {C_ACCENT} on {C_BG}")
+    info.append("   port  ", style=f"{C_DIM} on {C_BG}")
+    info.append("▸  ", style=f"{C_DIM} on {C_BG}")
+    info.append(str(ALLAMA_PORT), style=f"bold {C_ACCENT} on {C_BG}")
+    session_tbl.add_row(info)
 
-    cmds = Text()
-    cmds.append("  /bye", style=f"bold {C_ACCENT}")
-    cmds.append("  ·  ", style=C_DIM)
-    cmds.append("/clear", style=f"bold {C_ACCENT}")
-    cmds.append("  ·  ", style=C_DIM)
-    cmds.append("/exit", style=f"bold {C_ACCENT}")
-    cmds.append("    ", style=C_DIM)
-    cmds.append("Ctrl+C", style=f"bold {C_FG}")
-    cmds.append(" to quit", style=C_DIM)
-    body.add_row(cmds)
+    session_panel = Panel(
+        session_tbl,
+        title=section("Session"),
+        title_align="left",
+        box=_box.SQUARE,
+        border_style=C_DIM,
+        style=_S,
+        padding=(0, 1),
+    )
+
+    # Commands row
+    cmds_tbl = Table.grid(expand=True, padding=(0, 1))
+    cmds_tbl.add_column()
+    cmds = Text(style=_S)
+    cmds.append("  ", style=f"on {C_BG}")
+    for i, cmd in enumerate(["/bye", "/clear", "/exit"]):
+        cmds.append(cmd, style=f"bold {C_ACCENT} on {C_BG}")
+        cmds.append("  ·  ", style=f"{C_DIM} on {C_BG}")
+    cmds.append("Ctrl+C", style=f"bold {C_FG} on {C_BG}")
+    cmds.append(" to quit", style=f"{C_DIM} on {C_BG}")
+    cmds_tbl.add_row(cmds)
+
+    cmds_panel = Panel(
+        cmds_tbl,
+        title=section("Commands"),
+        title_align="left",
+        box=_box.SQUARE,
+        border_style=C_DIM,
+        style=_S,
+        padding=(0, 1),
+    )
+
+    body = Group(session_panel, cmds_panel)
+    main_win = Panel(
+        body,
+        box=_box.DOUBLE,
+        border_style=C_BORDER,
+        style=f"on {C_SCREEN}",
+        padding=(0, 0),
+        width=W,
+    )
 
     console.print()
-    console.print(Panel(body, title=f"[bold {C_FG}] ALLAMA RUN [/]",
-                        box=_box.DOUBLE, border_style=C_BORDER, padding=(0, 1), width=W))
+    console.print(main_win)
     console.print()
 
 
