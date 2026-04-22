@@ -93,19 +93,29 @@ class LoadingSpinner:
         return "".join(cl), "".join(sl), "".join(nl)
 
     def _spin(self):
+        import shutil
         ci = si = ni = 0
         last_c = last_s = last_n = 0
         tick = 0
         sys.stdout.write("\n\n")
         while self.running:
             elapsed = time.time() - self._start_time
+            try:
+                term_w = shutil.get_terminal_size().columns
+            except Exception:
+                term_w = 80
             cview = (_CLOUDS * 2)[ci % len(_CLOUDS): ci % len(_CLOUDS) + _WIN]
             sview = (_SKY    * 2)[si % len(_SKY):    si % len(_SKY)    + _WIN]
             nview = (_MOUNTAINS * 2)[ni % len(_MOUNTAINS): ni % len(_MOUNTAINS) + _WIN]
             cview, sview, nview = self._inject(cview, sview, nview, tick)
             cloud_line = f"  {cview}"
             sky_line   = f"  {sview}"
-            near_line  = f"  {nview}  {self.message}  [{elapsed:.0f}s]"
+            prefix     = f"  {nview}  "
+            time_part  = f"  [{elapsed:.0f}s]"
+            # Truncate message so the full near_line fits within terminal width
+            max_msg = term_w - len(prefix) - len(time_part) - 1
+            msg = self.message if len(self.message) <= max_msg else self.message[:max_msg - 1] + "…"
+            near_line  = f"{prefix}{msg}{time_part}"
             sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
             sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
             sys.stdout.write(f"\r{' ' * last_n}\r{near_line}")
