@@ -1,0 +1,22 @@
+backend = "llama.cpp"
+model = "/home/nick/AI/Models/Qwen3.6-35B-A3B-Uncensored-GGUF/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+mmproj = "/home/nick/AI/Models/Qwen3.6-35B-A3B-Uncensored-GGUF/mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+
+# MoE 35B-A3B Q4_K_M (~21GB), GPU 1 exclusiva (24GB) — mesma arch que Qwen3.6 regular
+pinned_gpu = 1
+n_ctx = 262144
+n_batch = "4096"
+n_gpu_layers = "-1"
+n_threads = "8"
+
+extra_args = [
+    "--jinja",
+    "--chat-template-file", "/home/nick/AI/Models/Qwen3.6-35B-A3B-Uncensored-GGUF/chat_template.jinja",
+    "--flash-attn", "on",
+    "--cache-type-k", "q4_0",
+    "--cache-type-v", "q4_0",
+    "--ubatch-size", "256",
+    "--threads-batch", "16",
+    "--cont-batching",
+    "--defrag-thold", "0.1"
+]

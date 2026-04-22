@@ -584,33 +584,6 @@ def cmd_logs(args):
         pass
 
 
-def cmd_ui(args):
-    """Open a web UI to chat with Allama models."""
-    interface = args.interface.lower()
-
-    # Check if server is running
-    if not _is_running():
-        print("❌ Allama server is not running. Start with: allama serve")
-        sys.exit(1)
-
-    base_url = BASE_URL
-    allama_api = f"{base_url}/v1"
-
-    if interface == "openwebui":
-        print(f"🌐 Opening OpenWebUI...")
-        print(f"   Allama API: {allama_api}")
-        print(f"   Configure OpenWebUI to connect to: {allama_api}")
-
-        # Try to open OpenWebUI if installed
-        try:
-            import webbrowser
-            webbrowser.open("http://localhost:8080")
-            print("✅ Opened browser at http://localhost:8080")
-            print("   (Make sure OpenWebUI is running separately)")
-        except Exception as e:
-            print(f"⚠️  Could not auto-open browser: {e}")
-            print(f"   Visit: http://localhost:8080")
-
 def cmd_run(args):
     """Load a model and open an interactive chat session."""
     model = args.model
@@ -1072,7 +1045,10 @@ def cmd_launch(args):
     phase_ref[0] = "model"
     load_error = None
     try:
-        result = _post("/v1/load", {"model": model}, timeout=300.0)
+        payload = {"model": model}
+        if args.gpu is not None:
+            payload["gpu_id"] = args.gpu
+        result = _post("/v1/load", payload, timeout=300.0)
     except KeyboardInterrupt:
         stop_spinner.set()
         spinner.join()
@@ -1163,6 +1139,94 @@ def cmd_backend_logs(args):
         pass
 
 
+def cmd_hardware_detect(args):
+    """Force hardware re-detection and show results."""
+    if _is_running():
+        print("Getting hardware info from running server...")
+        hw_data = _get("/v1/hardware")
+        if not hw_data:
+            print("Failed to get hardware info from server.")
+            return
+
+        profile = hw_data.get("profile")
+        if profile:
+            print("🔍 Hardware Profile:")
+            print(f"   Driver: {profile.get('driver_version', 'unknown')}")
+            print(f"   CUDA: {profile.get('cuda_version', 'unknown')}")
+            print(f"   Total VRAM: {profile.get('total_vram_gb', 0):.1f}GB")
+            print(f"   Available: {profile.get('available_vram_gb', 0):.1f}GB")
+            print(f"   Max contiguous: {profile.get('max_contiguous_gb', 0):.1f}GB")
+            print(f"\n   GPUs:")
+            for gpu in profile.get("gpus", []):
+                print(
+                    f"     {gpu['index']}: {gpu['name']} (compute {gpu['compute_capability']}) "
+                    f"— {gpu['total_memory_gb']:.1f}GB"
+                )
+        else:
+            print("No hardware profile detected.")
+    else:
+        print("Allama server is not running.")
+        print("Start with: allama serve")
+
+
+def cmd_calibrate(args):
+    """Pre-calibrate a model without loading it."""
+    import asyncio
+
+    sys.path.insert(0, str(ALLAMA_DIR))
+    from core.bootstrap import BootstrapDetector
+    from core.config import PHYSICAL_MODELS
+    from core.gpu import get_model_vram_need
+
+    if args.model not in PHYSICAL_MODELS:
+        print(f"❌ Model '{args.model}' not found in configs.")
+        print("Available physical models:")
+        for name in sorted(PHYSICAL_MODELS.keys()):
+            print(f"   · {name}")
+        return
+
+    print(f"🔍 Detecting hardware...")
+    try:
+        profile = asyncio.run(BootstrapDetector.detect_hardware())
+    except Exception as e:
+        print(f"❌ Hardware detection failed: {e}")
+        return
+
+    cfg = PHYSICAL_MODELS[args.model]
+    model_size_gb = get_model_vram_need(cfg, args.model)
+
+    print(f"📊 Calibrating {args.model}...")
+    try:
+        calib = asyncio.run(
+            BootstrapDetector.calibrate_for_model(
+                physical_name=args.model,
+                model_size_gb=model_size_gb,
+                hardware_profile=profile,
+                config=cfg,
+            )
+        )
+
+        print(f"✅ Calibration Result:")
+        print(f"   Model: {args.model}")
+        print(f"   Size: {model_size_gb:.1f}GB (estimated)")
+        print(f"   Backend: {calib.backend}")
+        print(f"   TP: {calib.recommended_tp}")
+        print(f"   ubatch-size: {calib.recommended_ubatch_size}")
+        print(f"   n_batch: {calib.recommended_n_batch}")
+        print(f"   n_ctx: {calib.recommended_n_ctx}")
+        print(f"   cache-dtype: {calib.recommended_cache_dtype}")
+        print(f"   Confidence: {calib.confidence}")
+        print(f"   Est. VRAM need: {calib.estimated_vram_need_gb:.1f}GB")
+
+        if calib.warnings:
+            print(f"\n   Warnings:")
+            for warn in calib.warnings:
+                print(f"      ⚠️  {warn}")
+
+    except Exception as e:
+        print(f"❌ Calibration failed: {e}")
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
     # Internal: running as watchdog daemon
@@ -1242,13 +1306,6 @@ def main():
                       help="Pin model to GPU N (0-based). If not specified, auto-select by available VRAM")
     p_run.set_defaults(func=cmd_run)
 
-    # ui
-    p_ui = sub.add_parser("ui", help="Open web UI to chat with models")
-    p_ui.add_argument("interface", nargs="?", default="openwebui",
-                      choices=["openwebui"],
-                      help="Web interface to open (default: openwebui)")
-    p_ui.set_defaults(func=cmd_ui)
-
     # launch
     p_launch = sub.add_parser("launch", help="Launch an AI client with a local model")
     launch_sub = p_launch.add_subparsers(dest="launch_target", metavar="<client>")
@@ -1256,9 +1313,20 @@ def main():
 
     p_lc = launch_sub.add_parser("claude", help="Open Claude Code with a local model")
     p_lc.add_argument("model", help="Logical model name (e.g. 'Qwen3.5:27b-Code')")
+    p_lc.add_argument("--gpu", type=int, default=None, metavar="ID",
+                      help="Force model onto a specific GPU (0-indexed)")
     p_lc.add_argument("claude_args", nargs=argparse.REMAINDER,
                       help="Extra arguments forwarded to claude")
     p_lc.set_defaults(func=cmd_launch)
+
+    # hardware-detect
+    p_hw = sub.add_parser("hardware-detect", help="Detect hardware and show info")
+    p_hw.set_defaults(func=cmd_hardware_detect)
+
+    # calibrate
+    p_calib = sub.add_parser("calibrate", help="Pre-calibrate a model")
+    p_calib.add_argument("model", help="Physical model name (e.g. 'Qwen3.5-27b')")
+    p_calib.set_defaults(func=cmd_calibrate)
 
     # backend
     p_backend = sub.add_parser("backend", help="Backend server commands")

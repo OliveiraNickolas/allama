@@ -2,6 +2,7 @@
 """
 Allama — entry point.
 """
+import asyncio
 import os
 import signal
 import sys
@@ -18,12 +19,47 @@ from core.config import ALLAMA_PORT, logger
 from core.server import app, close_http_client, show_banner
 from core.health import health_monitor
 from core.process import kill_process_tree, cleanup_orphaned_backends, clear_backend_registry
+from core.bootstrap import BootstrapDetector
 import core.state as state
 
 
 def main():
     show_banner()
     cleanup_orphaned_backends()
+
+    # Bootstrap GPU detection
+    try:
+        logger.info("🔍 Detecting hardware...")
+        start_time = time.time()
+
+        profile = asyncio.run(BootstrapDetector.detect_hardware())
+        duration_ms = (time.time() - start_time) * 1000
+
+        logger.info(
+            f"✅ Hardware detected ({duration_ms:.0f}ms):\n"
+            f"   Driver: {profile.driver_version} | CUDA: {profile.cuda_version}\n"
+            f"   GPUs: {len(profile.gpus)} | Total VRAM: {profile.total_vram_gb:.1f}GB "
+            f"({profile.available_vram_gb:.1f}GB free)"
+        )
+
+        for gpu in profile.gpus:
+            logger.info(
+                f"   GPU {gpu.index}: {gpu.name} (compute {gpu.compute_capability}) "
+                f"— {gpu.total_memory_gb:.1f}GB total, {gpu.free_memory_gb:.1f}GB free"
+            )
+
+        state.hardware_profile = profile
+        state.hardware_detected_at = profile.detected_at
+
+        # Save profile for debugging
+        profile_path = BootstrapDetector.save_profile_to_file(profile)
+        logger.debug(f"📄 Hardware profile saved: {profile_path}")
+
+    except Exception as e:
+        logger.warning(f"⚠️  Hardware detection failed: {e}")
+        logger.warning("   Continuing with static config (may have issues)")
+        state.hardware_profile = None
+        state.hardware_detected_at = None
 
     _health_monitor_thread = threading.Thread(target=health_monitor, daemon=True)
     _health_monitor_thread.start()
@@ -53,7 +89,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    uvicorn.run(app, host="127.0.0.1", port=ALLAMA_PORT, loop="uvloop")
+    uvicorn.run(app, host="127.0.0.1", port=ALLAMA_PORT)
 
 
 if __name__ == "__main__":

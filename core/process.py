@@ -100,7 +100,7 @@ from core.gpu import (
 # ==============================================================================
 # COMMAND BUILDERS
 # ==============================================================================
-def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int | None = None) -> tuple[list, int, int]:
+def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int | None = None, calib: Any | None = None) -> tuple[list, int, int]:
     """Build vLLM command with GPU and tensor parallelism configuration."""
     cfg = PHYSICAL_MODELS[physical_name]
 
@@ -117,6 +117,11 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int 
         adj_tp, selected_gpu = find_optimal_tp_and_gpus(physical_name, skip_gpu)
         tp_size = adj_tp
 
+    # Use calibrated TP if available
+    if calib and calib.recommended_tp > 0:
+        tp_size = calib.recommended_tp
+        logger.info(f"🔧 Using calibrated TP={tp_size} from bootstrap detection")
+
     cmd = [
         VLLM_PATH, "serve", cfg["path"],
         "--tokenizer", cfg["tokenizer"],
@@ -129,6 +134,17 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int 
         "--host", "127.0.0.1",
         "--api-key", "dummy",
     ]
+
+    # Apply calibrated ubatch-size
+    if calib and calib.recommended_ubatch_size > 0:
+        cmd += ["--ubatch-size", str(calib.recommended_ubatch_size)]
+        logger.info(f"🔧 Using calibrated ubatch-size={calib.recommended_ubatch_size}")
+
+    # Apply calibrated cache dtype
+    if calib and calib.recommended_cache_dtype and calib.recommended_cache_dtype != "auto":
+        cmd += ["--kv-cache-dtype", calib.recommended_cache_dtype]
+        logger.info(f"🔧 Using calibrated cache dtype={calib.recommended_cache_dtype}")
+
     if "max_num_batched_tokens" in cfg:
         cmd += ["--max-num-batched-tokens", str(cfg["max_num_batched_tokens"])]
     cmd.extend(cfg.get("extra_args", []))
@@ -136,7 +152,7 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int 
     return cmd, port, selected_gpu
 
 
-def build_llama_cmd(physical_name: str, gpu_id: int | None = None) -> tuple[list, int, int]:
+def build_llama_cmd(physical_name: str, gpu_id: int | None = None, calib: Any | None = None) -> tuple[list, int, int]:
     """Build llama.cpp command with GPU configuration."""
     cfg = PHYSICAL_MODELS[physical_name]
 
@@ -155,14 +171,26 @@ def build_llama_cmd(physical_name: str, gpu_id: int | None = None) -> tuple[list
             state.gpu_allocation[physical_name] = gpu_id
         logger.info(f"🎯 {physical_name} → GPU {gpu_id}")
 
+    # Determine n_batch (use calibrated if available)
+    n_batch = cfg.get("n_batch", "1024")
+    if calib and calib.recommended_n_batch > 0:
+        n_batch = calib.recommended_n_batch
+        logger.info(f"🔧 Using calibrated n_batch={n_batch}")
+
+    # Determine n_ctx (use calibrated if available)
+    n_ctx = cfg.get("n_ctx", "40960")
+    if calib and calib.recommended_n_ctx > 0:
+        n_ctx = calib.recommended_n_ctx
+        logger.info(f"🔧 Using calibrated n_ctx={n_ctx}")
+
     cmd = [
         LLAMA_CPP_PATH,
         "-m", cfg["model"],
         "--host", "127.0.0.1",
         "--port", str(port),
         "-t", str(cfg.get("n_threads", "16")),
-        "-c", str(cfg.get("n_ctx", "40960")),
-        "-b", str(cfg.get("n_batch", "1024")),
+        "-c", str(n_ctx),
+        "-b", str(n_batch),
         "-ngl", str(cfg.get("n_gpu_layers", "-1")),
     ]
     if cfg.get("mmproj") and os.path.exists(cfg["mmproj"]):

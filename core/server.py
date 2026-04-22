@@ -650,6 +650,71 @@ async def models_list():
     }
 
 
+@app.get("/v1/hardware")
+async def get_hardware_info():
+    """
+    Returns detected hardware profile and model calibrations.
+    Useful for debugging and understanding environment configuration.
+    """
+    import time as _time
+
+    result = {
+        "detected_at": state.hardware_detected_at,
+        "profile": None,
+        "calibrations": {},
+        "active_models": {},
+        "uptime_seconds": _time.time() - state.startup_time if hasattr(state, 'startup_time') else 0,
+    }
+
+    if state.hardware_profile:
+        result["profile"] = {
+            "driver_version": state.hardware_profile.driver_version,
+            "cuda_version": state.hardware_profile.cuda_version,
+            "total_vram_gb": state.hardware_profile.total_vram_gb,
+            "available_vram_gb": state.hardware_profile.available_vram_gb,
+            "max_contiguous_gb": state.hardware_profile.max_contiguous_gb,
+            "gpus": [
+                {
+                    "index": g.index,
+                    "name": g.name,
+                    "compute_capability": g.compute_capability,
+                    "total_memory_gb": g.total_memory_gb,
+                    "free_memory_gb": g.free_memory_gb,
+                }
+                for g in state.hardware_profile.gpus
+            ],
+        }
+
+    # Calibrations
+    for name, calib in state.bootstrap_calibrations.items():
+        result["calibrations"][name] = {
+            "backend": calib.backend,
+            "tp": calib.recommended_tp,
+            "ubatch_size": calib.recommended_ubatch_size,
+            "n_batch": calib.recommended_n_batch,
+            "n_ctx": calib.recommended_n_ctx,
+            "cache_dtype": calib.recommended_cache_dtype,
+            "confidence": calib.confidence,
+            "warnings": calib.warnings,
+            "estimated_vram_need_gb": calib.estimated_vram_need_gb,
+            "calibrated_at": calib.calibrated_at,
+        }
+
+    # Active models
+    with state.global_lock:
+        for name, server in state.active_servers.items():
+            idle_sec = _time.time() - state.server_idle_time.get(name, _time.time())
+            result["active_models"][name] = {
+                "backend": server.get("backend", "unknown"),
+                "pid": server.get("pid"),
+                "port": server.get("port"),
+                "gpu": state.gpu_allocation.get(name),
+                "idle_seconds": idle_sec,
+            }
+
+    return result
+
+
 @app.head("/")
 @app.get("/")
 async def root():
