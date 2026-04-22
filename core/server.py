@@ -841,12 +841,12 @@ def show_banner():
 
     def build_logo() -> list[str]:
         CHARS = {
-            'A': [" ███ ", "█   █", "█████", "█   █", "█   █"],
-            'L': ["█    ", "█    ", "█    ", "█    ", "█████"],
-            'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
+            'A': ["  █  ", " █ █ ", "█   █", "█   █", "█████", "█   █", "█   █"],
+            'L': ["█    ", "█    ", "█    ", "█    ", "█    ", "█    ", "█████"],
+            'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █", "█   █", "█   █"],
         }
         word, starts = list("ALLMA"), [0, 6, 12, 18, 24]
-        canvas = [[0] * 30 for _ in range(5)]
+        canvas = [[0] * 30 for _ in range(7)]
         for ch, col in zip(word, starts):
             for r, row in enumerate(CHARS[ch]):
                 for c, px in enumerate(row):
@@ -863,7 +863,7 @@ def show_banner():
                 for row in canvas]
 
     # ── logo panel ────────────────────────────────────────────────────────────
-    LOGO_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE]
+    LOGO_COLORS = [C_RED, C_RED, C_ORG, C_YELL, C_GRN, C_BLUE, C_BLUE]
     logo_text   = Text(justify="center")
     for i, row in enumerate(build_logo()):
         color = LOGO_COLORS[i % len(LOGO_COLORS)]
@@ -871,7 +871,7 @@ def show_banner():
             if ch == "█":   logo_text.append(ch, style=f"bold {color}")
             elif ch == "▒": logo_text.append(ch, style=f"dim {color}")
             else:            logo_text.append(ch)
-        if i < 4:
+        if i < 6:
             logo_text.append("\n")
     # ── configuration summary ─────────────────────────────────────────────────
     cfg_line = Text()
