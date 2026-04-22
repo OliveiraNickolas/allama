@@ -873,7 +873,7 @@ def _repl(model: str):
     try:
         while True:
             try:
-                model_tag = model.split("-")[-1] if "-" in model else model.split(":")[-1]
+                model_tag = model.split(":")[-1]
                 user_input = input(f"[{model_tag}] >>> ").strip()
             except (EOFError, KeyboardInterrupt):
                 print("\nBye!")
