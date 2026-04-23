@@ -42,28 +42,30 @@ class JSONFormatter(logging.Formatter):
 
 
 class ColoredFormatter(logging.Formatter):
-    """Colored console output with emojis for human readability."""
+    """Minimal retro log formatter with Unicode symbols."""
     colors = {
-        "DEBUG": "\033[36m ",
-        "INFO": "\033[32m ",
-        "WARNING": "\033[33m ",
-        "ERROR": "\033[31m ",
-        "CRITICAL": "\033[35m ",
+        "DEBUG": "\033[36m",      # cyan
+        "INFO": "\033[32m",       # green
+        "WARNING": "\033[33m",    # yellow
+        "ERROR": "\033[31m",      # red
+        "CRITICAL": "\033[35m",   # magenta
     }
     reset = "\033[0m"
-    datefmt = "%Y-%m-%d %H:%M:%S"
+    datefmt = "%H:%M:%S"
 
     def format(self, record: logging.LogRecord) -> str:
-        emoji = {
-            logging.DEBUG: "🔍",
-            logging.INFO: "ℹ️",
-            logging.WARNING: "⚠️",
-            logging.ERROR: "❌",
-            logging.CRITICAL: "💥",
-        }.get(record.levelno, "📝")
+        symbol = {
+            logging.DEBUG: "○",
+            logging.INFO: "◆",
+            logging.WARNING: "⚠",
+            logging.ERROR: "✕",
+            logging.CRITICAL: "⚡",
+        }.get(record.levelno, "·")
         color = self.colors.get(record.levelname, "")
-        level_style = f"{color}{record.levelname}{self.reset}"
-        return f"{self.formatTime(record)} - {emoji} {level_style} - {record.getMessage()}"
+        level_name = f"{color}{record.levelname:<8}{self.reset}"
+        time_str = self.formatTime(record)
+        message = record.getMessage()
+        return f"{time_str} │ {level_name} {symbol} {message}"
 
 
 # ==============================================================================

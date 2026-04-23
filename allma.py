@@ -29,14 +29,14 @@ def main():
 
     # Bootstrap GPU detection
     try:
-        logger.info("🔍 Detecting hardware...")
+        logger.info("Detecting hardware...")
         start_time = time.time()
 
         profile = asyncio.run(BootstrapDetector.detect_hardware())
         duration_ms = (time.time() - start_time) * 1000
 
         logger.info(
-            f"✅ Hardware detected ({duration_ms:.0f}ms):\n"
+            f"Hardware detected ({duration_ms:.0f}ms):\n"
             f"   Driver: {profile.driver_version} | CUDA: {profile.cuda_version}\n"
             f"   GPUs: {len(profile.gpus)} | Total VRAM: {profile.total_vram_gb:.1f}GB "
             f"({profile.available_vram_gb:.1f}GB free)"
@@ -53,11 +53,11 @@ def main():
 
         # Save profile for debugging
         profile_path = BootstrapDetector.save_profile_to_file(profile)
-        logger.debug(f"📄 Hardware profile saved: {profile_path}")
+        logger.debug(f"Hardware profile saved: {profile_path}")
 
     except Exception as e:
-        logger.warning(f"⚠️  Hardware detection failed: {e}")
-        logger.warning("   Continuing with static config (may have issues)")
+        logger.warning(f"Hardware detection failed: {e}")
+        logger.warning("Continuing with static config (may have issues)")
         state.hardware_profile = None
         state.hardware_detected_at = None
 
@@ -71,7 +71,7 @@ def main():
             time.sleep(0.5)
             os.kill(os.getpid(), signal.SIGKILL)
             return
-        logger.info("🛑 Shutdown requested...")
+        logger.info("Shutdown requested")
         state.running = False
         state._health_monitor_running.clear()
         with state.global_lock:
@@ -80,7 +80,7 @@ def main():
                 if server and server.get("process"):
                     pid = server["process"].pid
                     kill_process_tree(pid)
-                    logger.info(f"🔥 Killed process tree for {name} (PID {pid})")
+                    logger.info(f"Killed process tree for {name} (PID {pid})")
         clear_backend_registry()
         _health_monitor_thread.join(timeout=5)
         time.sleep(1)

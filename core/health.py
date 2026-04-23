@@ -11,7 +11,7 @@ from core.error_detector import ErrorDetector, tail_file
 
 def health_monitor():
     state._health_monitor_running.set()
-    logger.info("🏥 Health monitor started")
+    logger.info("Health monitor started")
     try:
         while state._health_monitor_running.is_set():
             try:
