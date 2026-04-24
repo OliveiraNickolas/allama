@@ -52,11 +52,6 @@ class ErrorDetector:
             r"n_ctx.*too large",
             r"context length.*exceeds",
         ],
-        "vram_fragmentation": [
-            r"fragmentation",
-            r"defrag",
-            r"memory fragmentation",
-        ],
         "invalid_model_path": [
             r"No such file or directory.*model",
             r"cannot find.*model",
@@ -67,11 +62,6 @@ class ErrorDetector:
             r"Failed to load tokenizer",
             r"cannot load tokenizer",
             r"tokenizer.*not found",
-        ],
-        "compute_capability_mismatch": [
-            r"compute capability",
-            r"SM version",
-            r"NVIDIA.*not supported",
         ],
     }
 
@@ -107,11 +97,6 @@ class ErrorDetector:
             "Reduzir n_ctx em base config",
             "Usar --yarn-scale-factor para extensão com YaRN",
         ],
-        "vram_fragmentation": [
-            "Aumentar --defrag-thold (ex: 0.1 → 0.05)",
-            "Reduzir max_num_seqs para menos requisições em paralelo",
-            "Reiniciar server para limpar fragmentação",
-        ],
         "invalid_model_path": [
             "Verificar path do modelo em base config",
             "Confirmar arquivo existe em /home/nick/AI/Models/",
@@ -121,10 +106,6 @@ class ErrorDetector:
             "Verificar tokenizer path em base config",
             "Confirmar arquivo tokenizer.model ou tokenizer.json existe",
             "Usar chat_template-file correto",
-        ],
-        "compute_capability_mismatch": [
-            "GPU não suporta compilação CUDA necessária",
-            "Usar build pré-compilado ou reduzir capability requisito",
         ],
     }
 
@@ -182,9 +163,6 @@ class ErrorDetector:
                 "Contexto (n_ctx) configurado é muito grande para GPU. "
                 "Reduzir n_ctx ou usar menos requisições em paralelo."
             ),
-            "vram_fragmentation": (
-                "VRAM is fragmented. Many small free spaces, no large contiguous block available."
-            ),
             "invalid_model_path": (
                 "Arquivo de modelo não encontrado em path configurado. "
                 "Verificar se arquivo existe e path está correto."
@@ -192,9 +170,6 @@ class ErrorDetector:
             "tokenizer_load_failed": (
                 "Tokenizer não encontrado ou falhou ao carregar. "
                 "Verificar path do tokenizer em base config."
-            ),
-            "compute_capability_mismatch": (
-                "GPU não suporta compilação CUDA necessária para este modelo."
             ),
         }
         return explanations.get(error_type, "Erro desconhecido")
@@ -215,8 +190,8 @@ class ErrorDetector:
             # Caso genérico CUDA OOM
             return "reduce_batch_params"
 
-        if error_type == "vram_fragmentation":
-            return "increase_defrag_threshold"
+        # Fragmentação VRAM: requer ajuste manual de defrag-thold na config, não auto-fix
+        # Auto-fix repetitivo não funciona bem aqui
 
         # Outros erros requerem ação manual
         return None

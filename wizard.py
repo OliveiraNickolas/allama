@@ -10,11 +10,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, ScrollableContainer, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, Input, Label, Select, Static
+from textual.widgets import Button, Checkbox, Input, Label, ProgressBar, Select, Static
 
 from create_config import (
     FAMILY_PRESETS,
@@ -29,6 +29,180 @@ from create_config import (
 BASE_DIR   = Path(__file__).parent
 CONFIG_DIR = BASE_DIR / "configs"
 STEP_TOTAL = 5
+
+# ── Catálogo de argumentos conhecidos por backend ─────────────────────────────
+# Cada entrada: id, label (exibido), description, args (lista de strings)
+ARG_CATALOG: dict[str, list[dict]] = {
+    "vllm": [
+        # ── Thinking / reasoning ──────────────────────────────────────────────
+        {
+            "id": "reasoning_qwen3",
+            "label": "--reasoning-parser qwen3",
+            "description": "Habilita bloco <think> para modelos Qwen3 com reasoning",
+            "args": ["--reasoning-parser", "qwen3"],
+        },
+        {
+            "id": "reasoning_deepseek_r1",
+            "label": "--reasoning-parser deepseek_r1",
+            "description": "Habilita bloco <think> para DeepSeek-R1",
+            "args": ["--reasoning-parser", "deepseek_r1"],
+        },
+        # ── Tool calling ──────────────────────────────────────────────────────
+        {
+            "id": "auto_tool_choice",
+            "label": "--enable-auto-tool-choice",
+            "description": "Deixa o modelo decidir quando chamar tools",
+            "args": ["--enable-auto-tool-choice"],
+        },
+        {
+            "id": "tool_parser_qwen3",
+            "label": "--tool-call-parser qwen3_coder",
+            "description": "Parser de tool calls para Qwen3 / Qwen-Coder",
+            "args": ["--tool-call-parser", "qwen3_coder"],
+        },
+        {
+            "id": "tool_parser_hermes",
+            "label": "--tool-call-parser hermes",
+            "description": "Parser de tool calls para Hermes / Mistral / Llama-3.1+",
+            "args": ["--tool-call-parser", "hermes"],
+        },
+        {
+            "id": "tool_parser_llama3",
+            "label": "--tool-call-parser llama3_json",
+            "description": "Parser de tool calls para Llama 3.x",
+            "args": ["--tool-call-parser", "llama3_json"],
+        },
+        {
+            "id": "tool_parser_pythonic",
+            "label": "--tool-call-parser pythonic",
+            "description": "Parser de tool calls estilo pythônico (Gemma3, etc.)",
+            "args": ["--tool-call-parser", "pythonic"],
+        },
+        # ── Performance / estabilidade ────────────────────────────────────────
+        {
+            "id": "disable_custom_allreduce",
+            "label": "--disable-custom-all-reduce",
+            "description": "Desativa all-reduce customizado — fix para TP>1 em alguns modelos",
+            "args": ["--disable-custom-all-reduce"],
+        },
+        {
+            "id": "prefix_caching",
+            "label": "--enable-prefix-caching",
+            "description": "Cache de prefixo — acelera conversas longas com mesmo contexto",
+            "args": ["--enable-prefix-caching"],
+        },
+        {
+            "id": "chunked_prefill",
+            "label": "--enable-chunked-prefill",
+            "description": "Prefill em chunks — melhora latência com contextos muito longos",
+            "args": ["--enable-chunked-prefill"],
+        },
+        {
+            "id": "enforce_eager",
+            "label": "--enforce-eager",
+            "description": "Desativa CUDA graphs — mais lento, mas resolve erros em alguns modelos",
+            "args": ["--enforce-eager"],
+        },
+        # ── Multimodal ────────────────────────────────────────────────────────
+        {
+            "id": "mm_limit_image1",
+            "label": "--limit-mm-per-prompt image=1",
+            "description": "Limita a 1 imagem por prompt (modelos de visão compactos)",
+            "args": ["--limit-mm-per-prompt", "image=1"],
+        },
+        {
+            "id": "mm_limit_image4",
+            "label": "--limit-mm-per-prompt image=4",
+            "description": "Limita a 4 imagens por prompt (modelos de visão padrão)",
+            "args": ["--limit-mm-per-prompt", "image=4"],
+        },
+    ],
+    "llama.cpp": [
+        # ── Formato de chat ───────────────────────────────────────────────────
+        {
+            "id": "jinja",
+            "label": "--jinja",
+            "description": "Templates Jinja para chat — necessário para tool calling completo",
+            "args": ["--jinja"],
+        },
+        # ── Performance ───────────────────────────────────────────────────────
+        {
+            "id": "flash_attn_on",
+            "label": "--flash-attn on",
+            "description": "Flash Attention 2 — mais rápido e menor uso de VRAM",
+            "args": ["--flash-attn", "on"],
+        },
+        {
+            "id": "cont_batching",
+            "label": "--cont-batching",
+            "description": "Batching contínuo — melhor throughput com múltiplos clientes",
+            "args": ["--cont-batching"],
+        },
+        {
+            "id": "cache_reuse",
+            "label": "--cache-reuse 256",
+            "description": "Reutiliza cache de KV — acelera conversas longas",
+            "args": ["--cache-reuse", "256"],
+        },
+        # ── Memória ───────────────────────────────────────────────────────────
+        {
+            "id": "no_mmap",
+            "label": "--no-mmap",
+            "description": "Desativa mmap — mais lento para carregar, evita falhas em alguns sistemas",
+            "args": ["--no-mmap"],
+        },
+        {
+            "id": "mlock",
+            "label": "--mlock",
+            "description": "Bloqueia modelo na RAM — evita swap para disco",
+            "args": ["--mlock"],
+        },
+    ],
+}
+
+
+def _args_in_preset(entry_args: list, preset_args: list) -> bool:
+    """Return True if entry_args appear consecutively anywhere in preset_args."""
+    n = len(entry_args)
+    if n == 0:
+        return False
+    for i in range(len(preset_args) - n + 1):
+        if preset_args[i:i + n] == entry_args:
+            return True
+    return False
+
+
+def _estimate_context_vram(ctx_tokens: int, model_path, size_gb: float) -> tuple[float, float]:
+    """Return (kv_cache_gb, total_estimated_gb) for a given context length.
+
+    Uses architecture details from config.json when available; falls back to
+    a size-based heuristic otherwise.
+    """
+    kv_gb = 0.0
+    path  = Path(model_path) if model_path else None
+
+    if path and (path / "config.json").exists():
+        try:
+            data    = json.loads((path / "config.json").read_text())
+            tc      = data.get("text_config", data)
+            n_lay   = tc.get("num_hidden_layers", 0)
+            n_kv    = tc.get("num_key_value_heads", tc.get("num_attention_heads", 0))
+            n_heads = tc.get("num_attention_heads", 1) or 1
+            hidden  = tc.get("hidden_size", 0)
+            h_dim   = tc.get("head_dim", hidden // n_heads if n_heads else 0)
+            if n_lay and n_kv and h_dim:
+                # 2 (K+V) × layers × kv_heads × head_dim × 2 bytes (bf16/fp16)
+                bytes_per_tok = 2 * n_lay * n_kv * h_dim * 2
+                kv_gb = (ctx_tokens * bytes_per_tok) / (1024 ** 3)
+        except Exception:
+            pass
+
+    if kv_gb == 0.0:
+        # Heuristic: ~2 GB/B params (fp16), ~0.01 GB KV per 1K tokens per 10B
+        params_b = size_gb / 2.0
+        kv_gb    = (ctx_tokens / 1024) * (params_b / 10) * 0.10
+
+    return kv_gb, size_gb + kv_gb
 
 STEP_LABELS = [
     (1, "DIRETÓRIO",  "Localizar modelo"),
@@ -56,7 +230,8 @@ class WizardState:
     n_threads:    str  = "16"
     n_gpu_layers: str  = "-1"
     extra_args:   list = field(default_factory=list)
-    profiles: list = field(default_factory=list)
+    profiles:     list = field(default_factory=list)
+    gpu_id:       int  = -1  # -1 = auto
 
 
 def _nav_panel(current: int) -> str:
@@ -341,7 +516,7 @@ class WizardStep3Screen(Screen):
             "n_ctx":        str(min(max_len, 40960)),
             "n_threads":    "16",
             "n_gpu_layers": "-1",
-            "extra_args":   json.dumps(extra),
+            "_preset_args": extra,          # raw list for checkbox matching
         }
 
     def compose(self) -> ComposeResult:
@@ -350,9 +525,16 @@ class WizardStep3Screen(Screen):
         info    = self._state.info
         gpus    = self._state.gpus
 
-        gpu_hint = (
-            "  ·  ".join(f"GPU{g['index']} {g['free_gb']:.0f}GB livres" for g in gpus)
-            if gpus else "Nenhuma GPU detectada"
+        # Pre-compute slider values
+        max_ctx_nat = info.get("max_ctx") or 131072
+        slider_max  = min(max_ctx_nat, 131072)
+        def_ctx     = int(d["max_len"] if backend == "vllm" else d["n_ctx"])
+        kv0, tot0   = _estimate_context_vram(
+            def_ctx, self._state.model_path, info.get("size_gb", 10)
+        )
+        ctx_lbl = (
+            f"[bold #007878]{def_ctx:,}[/] tokens  ·  "
+            f"KV cache: ~{kv0:.1f} GB  ·  Total estimado: ~{tot0:.1f} GB"
         )
 
         with Container(classes="shadow-wrap"):
@@ -364,14 +546,41 @@ class WizardStep3Screen(Screen):
                         with ScrollableContainer(id="wizard-container"):
                             yield _section("Como o modelo físico será carregado?")
 
+                            # ── Nome físico ──────────────────────────────────
                             with Vertical(classes="wizard-field"):
                                 yield Label("  Nome do modelo físico:")
                                 yield Input(value=d["phys_name"], id="phys-name")
                                 yield _hint(
-                                    "Nome interno no Allma.\n"
-                                    "  Vira o arquivo: configs/base/<nome>.allm"
+                                    "Nome interno no Allma.  "
+                                    "Vira o arquivo: configs/base/<nome>.allm"
                                 )
 
+                            # ── Contexto com medidor de VRAM ─────────────────
+                            yield _section("Comprimento de contexto:")
+                            with Vertical(classes="wizard-field"):
+                                with Horizontal(classes="wizard-row-2col"):
+                                    with Vertical(classes="col-half"):
+                                        yield Input(
+                                            value=str(def_ctx),
+                                            id="ctx-input",
+                                            placeholder="ex: 32768",
+                                        )
+                                        yield _hint(
+                                            f"Máx. nativo: {slider_max:,} tokens.  "
+                                            "Valores comuns: 8192 / 32768 / 65536 / 131072"
+                                        )
+                                    with Vertical(classes="col-half"):
+                                        yield Static(ctx_lbl, id="ctx-vram-label",
+                                                     classes="ctx-vram-label")
+                                yield ProgressBar(
+                                    total=slider_max,
+                                    id="ctx-bar",
+                                    classes="ctx-bar",
+                                    show_eta=False,
+                                    show_percentage=False,
+                                )
+
+                            # ── Opções por backend ───────────────────────────
                             if backend == "vllm":
                                 with Horizontal(classes="wizard-row-2col"):
                                     with Vertical(classes="col-half"):
@@ -379,45 +588,60 @@ class WizardStep3Screen(Screen):
                                         yield Input(value=d["tp"], id="tp")
                                         yield _hint("GPUs para dividir o modelo.  1 = 1 GPU.")
                                     with Vertical(classes="col-half"):
-                                        yield Label("  Comprimento máximo de contexto:")
-                                        yield Input(value=d["max_len"], id="max-len")
-                                        max_ctx = info.get("max_ctx")
-                                        yield _hint(f"Máximo: {max_ctx:,} tokens." if max_ctx else "Tokens máximos por vez.")
-                                with Horizontal(classes="wizard-row-2col"):
-                                    with Vertical(classes="col-half"):
                                         yield Label("  Utilização de VRAM  (0.0–1.0):")
                                         yield Input(value=d["gpu_util"], id="gpu-util")
                                         yield _hint("0.90 = 90% da VRAM — default seguro.")
-                                    with Vertical(classes="col-half"):
-                                        yield Label("  Máx. requisições simultâneas:")
-                                        yield Input(value=d["max_num_seqs"], id="max-num-seqs")
-                                        yield _hint("Throughput vs uso de VRAM.")
+                                with Vertical(classes="wizard-field"):
+                                    yield Label("  Máx. requisições simultâneas:")
+                                    yield Input(value=d["max_num_seqs"], id="max-num-seqs")
+                                    yield _hint("Throughput vs uso de VRAM.")
                             else:
                                 with Horizontal(classes="wizard-row-2col"):
-                                    with Vertical(classes="col-half"):
-                                        yield Label("  Janela de contexto (tokens):")
-                                        yield Input(value=d["n_ctx"], id="n-ctx")
-                                        max_ctx = info.get("max_ctx")
-                                        yield _hint(f"Suporta até {max_ctx:,} tokens." if max_ctx else "Comprimento máximo de conversa.")
                                     with Vertical(classes="col-half"):
                                         yield Label("  Threads de CPU:")
                                         yield Input(value=d["n_threads"], id="n-threads")
                                         yield _hint("Threads usadas para inferência.")
+                                    with Vertical(classes="col-half"):
+                                        yield Label("  Camadas na GPU  (-1 = todas):")
+                                        yield Input(value=d["n_gpu_layers"], id="n-gpu-layers")
+                                        yield _hint("-1 = todas as camadas na GPU.  0 = só CPU.")
+
+                            # ── Seletor de GPU (apenas quando multi-GPU) ─────
+                            if len(gpus) > 1:
+                                yield _section("GPU:")
                                 with Vertical(classes="wizard-field"):
-                                    yield Label("  Camadas na GPU  (-1 = todas):")
-                                    yield Input(value=d["n_gpu_layers"], id="n-gpu-layers")
-                                    yield _hint("-1 = todas as camadas na GPU.  0 = somente CPU.")
+                                    gpu_opts: list = [("Auto  (melhor disponível)", -1)]
+                                    for g in gpus:
+                                        gname = g.get("name", f"GPU {g['index']}")
+                                        gpu_opts.append((
+                                            f"GPU {g['index']}  –  {gname}  "
+                                            f"({g['free_gb']:.0f} GB livres)",
+                                            g["index"],
+                                        ))
+                                    yield Select(gpu_opts, id="gpu-pin", value=-1)
+                                    yield _hint(
+                                        "Fixar em uma GPU específica.  "
+                                        "Auto = Allma decide na hora de carregar."
+                                    )
 
-                            with Vertical(classes="wizard-field"):
-                                yield Label("  Argumentos extras (lista JSON):")
-                                yield Input(value=d["extra_args"], id="extra-args")
+                            # ── Checkboxes de argumentos ─────────────────────
+                            with Vertical(classes="wizard-field", id="args-section"):
+                                yield _section("Argumentos do backend:")
                                 yield _hint(
-                                    "Flags avançadas para o backend.\n"
-                                    "  Pré-definidas para esta família de modelos.\n"
-                                    '  Formato: ["--flag", "valor", ...]'
+                                    f"[bold #007878]✔ marcado[/] = recomendado para "
+                                    f"{FAMILY_PRESETS[info['family']]['label']}  ·  "
+                                    "Outros disponíveis para ativar."
                                 )
-
-                            yield Static(f"\n  [#6a5a48]Hardware detectado: {gpu_hint}[/]")
+                                preset_args = d["_preset_args"]
+                                for entry in ARG_CATALOG.get(backend, []):
+                                    checked = _args_in_preset(entry["args"], preset_args)
+                                    yield Checkbox(
+                                        f"[bold]{entry['label']}[/bold]"
+                                        f"   [#6a5a48]{entry['description']}[/]",
+                                        value=checked,
+                                        id=f"arg-{entry['id']}",
+                                        classes="arg-check",
+                                    )
 
                         with Container(id="tip-box"):
                             yield Static(
@@ -429,9 +653,45 @@ class WizardStep3Screen(Screen):
                             yield Button("PRÓXIMO  ►", id="next-btn", variant="primary")
                 yield Static("<ESC: Voltar>", id="fkey-bar")
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.control.id != "ctx-input":
+            return
+        try:
+            ctx = int(event.value)
+            if ctx < 512:
+                return
+        except ValueError:
+            return
+        kv, tot = _estimate_context_vram(
+            ctx, self._state.model_path, self._state.info.get("size_gb", 10)
+        )
+        label = (
+            f"[bold #007878]{ctx:,}[/] tokens  ·  "
+            f"KV cache: ~{kv:.1f} GB  ·  Total: ~{tot:.1f} GB"
+        )
+        self.query_one("#ctx-vram-label", Static).update(label)
+        # Update progress bar
+        max_ctx_nat = self._state.info.get("max_ctx") or 131072
+        bar_max = min(max_ctx_nat, 131072)
+        try:
+            bar = self.query_one("#ctx-bar", ProgressBar)
+            bar.update(total=bar_max, progress=min(ctx, bar_max))
+        except Exception:
+            pass
+
     def on_mount(self) -> None:
         self.query_one("#main-window").border_title = "[ ADICIONAR MODELO — PASSO 3/5 ]"
         _setup_tip(self)
+        # Initialize progress bar to current default context value
+        try:
+            d   = self._defaults()
+            ctx = int(d["max_len"] if self._state.backend == "vllm" else d["n_ctx"])
+            max_ctx_nat = self._state.info.get("max_ctx") or 131072
+            bar_max = min(max_ctx_nat, 131072)
+            bar = self.query_one("#ctx-bar", ProgressBar)
+            bar.update(total=bar_max, progress=min(ctx, bar_max))
+        except Exception:
+            pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "back-btn":
@@ -449,25 +709,45 @@ class WizardStep3Screen(Screen):
         state = deepcopy(self._state)
         state.phys_name = val("phys-name") or self._state.model_path.name
 
-        raw_args = val("extra-args")
+        # Context from input
         try:
-            parsed = json.loads(raw_args) if raw_args else []
-            state.extra_args = parsed if isinstance(parsed, list) else []
-        except json.JSONDecodeError:
-            state.extra_args = []
+            ctx_val = int(val("ctx-input", "131072"))
+            if ctx_val < 512:
+                ctx_val = 131072
+        except (ValueError, TypeError):
+            ctx_val = 131072
 
+        # Backend-specific options
         if state.backend == "vllm":
-            try:   state.tp      = int(val("tp", "1"))
+            state.max_len = ctx_val
+            try:   state.tp = int(val("tp", "1"))
             except ValueError: state.tp = 1
-            try:   state.max_len = int(val("max-len", "131072"))
-            except ValueError: state.max_len = 131072
-            state.gpu_util     = val("gpu-util",      "0.90")
-            state.max_num_seqs = val("max-num-seqs",  "8")
+            state.gpu_util     = val("gpu-util",     "0.90")
+            state.max_num_seqs = val("max-num-seqs", "8")
         else:
-            try:   state.n_ctx  = int(val("n-ctx", "40960"))
-            except ValueError: state.n_ctx = 40960
+            state.n_ctx        = ctx_val
             state.n_threads    = val("n-threads",    "16")
             state.n_gpu_layers = val("n-gpu-layers", "-1")
+
+        # GPU pin
+        state.gpu_id = -1
+        if len(state.gpus) > 1:
+            try:
+                gs = self.query_one("#gpu-pin", Select)
+                v  = gs.value
+                state.gpu_id = int(v) if v is not Select.BLANK else -1
+            except Exception:
+                pass
+
+        # Checked args
+        collected: list = []
+        for entry in ARG_CATALOG.get(state.backend, []):
+            try:
+                if self.query_one(f"#arg-{entry['id']}", Checkbox).value:
+                    collected.extend(entry["args"])
+            except Exception:
+                pass
+        state.extra_args = collected
 
         self.app.push_screen(WizardStep4Screen(state))
 
@@ -636,6 +916,8 @@ class WizardStep5Screen(Screen):
                                       f'n_threads = "{s.n_threads}"')
             content = content.replace('n_gpu_layers = "-1"',
                                       f'n_gpu_layers = "{s.n_gpu_layers}"')
+        if s.gpu_id is not None and s.gpu_id >= 0:
+            content = content.rstrip() + f'\ngpu_id = {s.gpu_id}\n'
         return content
 
     def _preview_text(self) -> str:
@@ -725,3 +1007,327 @@ class WizardStep5Screen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
+
+
+# ==============================================================================
+# STANDALONE APP
+# ==============================================================================
+_WIZARD_CSS = """
+/* ── Global ─────────────────────────────────────────────────── */
+Screen {
+    background: #e8dfc8;
+    layers: base;
+}
+
+/* ── Outer wrapper ──────────────────────────────────────────── */
+.shadow-wrap {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Main window (with border_title) ────────────────────────── */
+#main-window {
+    width: 100%;
+    height: 1fr;
+    border: double #007878;
+    background: #e8dfc8;
+    layout: vertical;
+}
+
+/* ── Horizontal split: nav | content ────────────────────────── */
+#wizard-layout {
+    width: 100%;
+    height: 1fr;
+    layout: horizontal;
+}
+
+/* ── Left nav sidebar ───────────────────────────────────────── */
+#step-nav {
+    width: 26;
+    height: 100%;
+    background: #dfd6be;
+    border-right: solid #008888;
+    padding: 0;
+    overflow: hidden hidden;
+}
+
+#nav-text {
+    padding: 0;
+    width: 100%;
+}
+
+/* ── Right content area ─────────────────────────────────────── */
+#step-content {
+    width: 1fr;
+    height: 100%;
+    layout: vertical;
+}
+
+/* ── Scrollable form area ───────────────────────────────────── */
+#wizard-container {
+    width: 100%;
+    height: 1fr;
+    padding: 0 2 1 2;
+    overflow-y: auto;
+    scrollbar-size: 1 1;
+    scrollbar-color: #007878;
+    scrollbar-background: #dfd6be;
+}
+
+/* ── Tip box ────────────────────────────────────────────────── */
+#tip-box {
+    width: 100%;
+    height: 4;
+    border-top: solid #008888;
+    background: #dfd6be;
+    padding: 0 2;
+    layout: vertical;
+    align: left middle;
+}
+
+#tip-text {
+    color: #6a5a48;
+}
+
+/* ── Navigation buttons row ─────────────────────────────────── */
+#wizard-nav {
+    width: 100%;
+    height: 3;
+    border-top: solid #008888;
+    background: #dfd6be;
+    layout: horizontal;
+    align: right middle;
+    padding: 0 1;
+}
+
+/* ── Bottom function-key bar ────────────────────────────────── */
+#fkey-bar {
+    width: 100%;
+    height: 1;
+    background: #007878;
+    color: #e8dfc8;
+    text-align: center;
+    text-style: bold;
+}
+
+/* ── Section headers ────────────────────────────────────────── */
+.wizard-section {
+    color: #007878;
+    text-style: bold;
+    margin: 1 0 0 0;
+    width: 100%;
+}
+
+/* ── Hint text ──────────────────────────────────────────────── */
+.wizard-hint {
+    color: #6a5a48;
+    margin: 0 0 1 0;
+    width: 100%;
+}
+
+/* ── Field container ────────────────────────────────────────── */
+.wizard-field {
+    width: 100%;
+    margin-bottom: 1;
+    layout: vertical;
+}
+
+/* ── 2-column row ───────────────────────────────────────────── */
+.wizard-row-2col {
+    width: 100%;
+    height: auto;
+    layout: horizontal;
+    margin-bottom: 1;
+}
+
+.col-half {
+    width: 1fr;
+    height: auto;
+    layout: vertical;
+    padding-right: 1;
+}
+
+/* ── Mini sampling row (4 tiny inputs) ──────────────────────── */
+.sampling-row-mini {
+    width: 100%;
+    height: auto;
+    layout: horizontal;
+}
+
+.sampling-mini {
+    width: 1fr;
+    height: auto;
+    layout: vertical;
+    padding-right: 1;
+}
+
+/* ── Preview code block (step 5) ────────────────────────────── */
+.wizard-preview {
+    background: #dfd6be;
+    border: solid #a09080;
+    padding: 1 2;
+    color: #1a1a1a;
+    width: 100%;
+}
+
+/* ── Summary text (step 2) ──────────────────────────────────── */
+#detect-summary {
+    color: #1a1a1a;
+    width: 100%;
+    margin-bottom: 1;
+}
+
+/* ── Input fields ───────────────────────────────────────────── */
+Input {
+    background: #f5ede0;
+    border: tall #a09080;
+    color: #1a1a1a;
+    height: 3;
+    width: 100%;
+}
+
+Input:focus {
+    border: tall #007878;
+    background: #faf4ea;
+}
+
+/* ── Select dropdowns ───────────────────────────────────────── */
+Select {
+    background: #f5ede0;
+    border: tall #a09080;
+    color: #1a1a1a;
+    width: 100%;
+}
+
+Select:focus {
+    border: tall #007878;
+}
+
+Select > SelectOverlay {
+    background: #f5ede0;
+    border: tall #007878;
+    color: #1a1a1a;
+}
+
+/* ── Labels ─────────────────────────────────────────────────── */
+Label {
+    color: #3a3020;
+    height: 1;
+    margin: 1 0 0 0;
+}
+
+/* ── Buttons ────────────────────────────────────────────────── */
+Button {
+    background: #007878;
+    color: #e8dfc8;
+    border: none;
+    margin: 0 1;
+    min-width: 22;
+    height: 3;
+}
+
+Button:hover {
+    background: #009090;
+    color: #ffffff;
+}
+
+Button:focus {
+    border: tall #e8dfc8;
+}
+
+Button.-primary {
+    background: #005f5f;
+    color: #e8dfc8;
+    text-style: bold;
+}
+
+Button.-primary:hover {
+    background: #007878;
+}
+
+Button:disabled {
+    background: #a09880;
+    color: #d0c8b0;
+}
+
+/* ── Context VRAM meter ──────────────────────────────────────── */
+.ctx-vram-label {
+    width: 100%;
+    height: auto;
+    color: #1a1a1a;
+    padding: 1 0 0 1;
+    text-align: left;
+}
+
+.ctx-bar {
+    width: 100%;
+    margin: 1 0 0 0;
+    height: 1;
+}
+
+.ctx-bar > Bar {
+    color: #007878;
+    background: #c0b898;
+}
+
+.ctx-bar > .bar--bar {
+    color: #007878;
+}
+
+.ctx-bar > .bar--complete {
+    color: #007878;
+}
+
+/* ── Arg checkboxes ─────────────────────────────────────────── */
+.arg-check {
+    background: #e8dfc8;
+    color: #1a1a1a;
+    margin: 0;
+    padding: 0 1;
+    height: 2;
+    width: 100%;
+}
+
+.arg-check:hover {
+    background: #dfd6be;
+}
+
+.arg-check:focus {
+    background: #dfd6be;
+    border: none;
+}
+
+/* checked state: teal tick */
+.arg-check.-on {
+    color: #1a1a1a;
+}
+
+#args-section {
+    border: solid #a09080;
+    padding: 1;
+    margin-bottom: 1;
+    background: #ede5d0;
+}
+
+/* ── Status / detect outputs ────────────────────────────────── */
+#detect-status {
+    color: #1a1a1a;
+    width: 100%;
+    margin-top: 1;
+}
+
+#save-status {
+    color: #1a1a1a;
+    width: 100%;
+    margin-top: 1;
+}
+"""
+
+
+class WizardApp(App):
+    TITLE = "ALLMA · Model Wizard"
+    CSS   = _WIZARD_CSS
+    ENABLE_COMMAND_PALETTE = False
+
+    def on_mount(self) -> None:
+        self.push_screen(WizardStep1Screen())

@@ -589,6 +589,25 @@ def cmd_ps(args):
         print(f"{active} model(s) loaded.")
 
 
+def cmd_unload(args):
+    """Unload a running model immediately, freeing its VRAM."""
+    if not _is_running():
+        print("Allma is not running.")
+        return
+    model = args.model
+    resp = _post("/v1/unload", {"model": model})
+    if resp is None:
+        print(f"Failed to reach Allma server.")
+        return
+    if "error" in resp:
+        print(f"Error: {resp['error']}")
+        loaded = resp.get("loaded", [])
+        if loaded:
+            print(f"Loaded base models: {', '.join(loaded)}")
+        return
+    print(f"Unloaded: {resp.get('model', model)}")
+
+
 def cmd_logs(args):
     """Tail the Allma log file."""
     if not LOG_FILE.exists():
@@ -1326,7 +1345,7 @@ def cmd_hardware_detect(args):
 
         profile = hw_data.get("profile")
         if profile:
-            print("🔍 Hardware Profile:")
+            print("Hardware Profile:")
             print(f"   Driver: {profile.get('driver_version', 'unknown')}")
             print(f"   CUDA: {profile.get('cuda_version', 'unknown')}")
             print(f"   Total VRAM: {profile.get('total_vram_gb', 0):.1f}GB")
@@ -1361,7 +1380,7 @@ def cmd_calibrate(args):
             print(f"   · {name}")
         return
 
-    print(f"🔍 Detecting hardware...")
+    print(f"Detecting hardware...")
     try:
         profile = asyncio.run(BootstrapDetector.detect_hardware())
     except Exception as e:
@@ -1371,7 +1390,7 @@ def cmd_calibrate(args):
     cfg = BASE_MODELS[args.model]
     model_size_gb = get_model_vram_need(cfg, args.model)
 
-    print(f"📊 Calibrating {args.model}...")
+    print(f"Calibrating {args.model}...")
     try:
         calib = asyncio.run(
             BootstrapDetector.calibrate_for_model(
@@ -1397,10 +1416,20 @@ def cmd_calibrate(args):
         if calib.warnings:
             print(f"\n   Warnings:")
             for warn in calib.warnings:
-                print(f"      ⚠️  {warn}")
+                print(f"      ⚠  {warn}")
 
     except Exception as e:
-        print(f"❌ Calibration failed: {e}")
+        print(f"✕ Calibration failed: {e}")
+
+
+def cmd_download(args):
+    from core.downloader import run_download
+    run_download(args.url)
+
+
+def cmd_wizard(_args):
+    from wizard import WizardApp
+    WizardApp().run()
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -1469,6 +1498,11 @@ def main():
     p_ps = sub.add_parser("ps", help="Show loaded models")
     p_ps.set_defaults(func=cmd_ps)
 
+    # unload
+    p_unload = sub.add_parser("unload", help="Unload a model and free its VRAM")
+    p_unload.add_argument("model", help="Base model name (e.g. 'Qwen3.5-27b') or profile name")
+    p_unload.set_defaults(func=cmd_unload)
+
     # logs
     p_logs = sub.add_parser("logs", help="Show Allma logs")
     p_logs.add_argument("-f", "--follow", action="store_true", help="Follow log output")
@@ -1514,6 +1548,15 @@ def main():
     p_bl.add_argument("-n", "--lines", type=int, default=50, metavar="N", help="Lines to show (default: 50)")
     p_bl.add_argument("name", nargs="?", default=None, help="Backend name (optional if only one is running)")
     p_bl.set_defaults(func=cmd_backend_logs)
+
+    # download
+    p_dl = sub.add_parser("download", help="Download a model from HuggingFace and create configs")
+    p_dl.add_argument("url", help="HuggingFace URL or repo id (e.g. Qwen/Qwen2.5-7B-Instruct)")
+    p_dl.set_defaults(func=cmd_download)
+
+    # wizard
+    p_wz = sub.add_parser("wizard", help="Interactive wizard to create model configs")
+    p_wz.set_defaults(func=cmd_wizard)
 
     args = parser.parse_args()
     args.func(args)

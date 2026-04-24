@@ -21,50 +21,6 @@ from core.loader import ensure_base_model
 from core.process import shutdown_server
 from core.error_detector import ErrorDetector
 
-# ==============================================================================
-# JINJA TEMPLATE RENDERER (llama.cpp thinking control)
-# ==============================================================================
-import os as _os
-
-def _get_template_file(cfg: dict) -> str | None:
-    """Extract --chat-template-file path from base config extra_args."""
-    args = cfg.get("extra_args", [])
-    for i, arg in enumerate(args):
-        if arg == "--chat-template-file" and i + 1 < len(args):
-            return args[i + 1]
-    return None
-
-
-def _strip_think_prefix(text: str) -> str:
-    """Remove leading </think> artifact that models sometimes emit when thinking is pre-closed."""
-    import re as _re
-    return _re.sub(r"^</think>\s*", "", text, count=1)
-
-
-def _render_no_think_prompt(cfg: dict, messages: list, tools: list | None = None) -> str | None:
-    """Render chat template in Python with enable_thinking=False.
-    Returns the full prompt string, or None if no template file configured."""
-    template_file = _get_template_file(cfg)
-    if not template_file or not _os.path.exists(template_file):
-        return None
-    try:
-        from jinja2 import Environment, FileSystemLoader
-        env = Environment(
-            loader=FileSystemLoader(_os.path.dirname(template_file)),
-            keep_trailing_newline=True,
-        )
-        env.globals["tojson"] = lambda v, **kw: __import__("json").dumps(v, ensure_ascii=False)
-        t = env.get_template(_os.path.basename(template_file))
-        return t.render(
-            messages=messages,
-            add_generation_prompt=True,
-            enable_thinking=False,
-            tools=tools or None,
-        )
-    except Exception as e:
-        logger.warning(f"Template render failed: {e}")
-        return None
-
 
 # ==============================================================================
 # HTTP CLIENT
@@ -95,7 +51,7 @@ async def close_http_client():
 # ==============================================================================
 async def lifespan(app: FastAPI):
     yield
-    logger.info("🛑 Shutting down Allma...")
+    logger.info("Shutting down Allma...")
     with state.global_lock:
         names = list(state.active_servers.keys())
     for name in names:
@@ -113,7 +69,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     user_agent = request.headers.get("user-agent", "unknown")
 
     logger.info(
-        f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})"
+        f"[HTTP] {request.method} {request.url.path} from {client_host} ({format_user_agent(user_agent)})"
     )
 
     if model_name not in PROFILE_MODELS:
@@ -158,7 +114,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     logger.debug(f"{model_name} -> {base_name}:{port} ({backend})")
 
     if "messages" not in body or not body["messages"]:
-        logger.warning("⚠️  Empty messages request")
+        logger.warning(" Empty messages request")
         if body.get("stream", False):
             async def empty_stream():
                 yield "data: [DONE]\n\n"
@@ -173,7 +129,6 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         req_body = body
 
         if req_body.get("stream", False):
-            import json as _json2
             async def generate():
                 try:
                     async with client.stream("POST", url, json=req_body) as response:
@@ -253,23 +208,30 @@ async def messages(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})")
+    logger.info(f"[HTTP] {request.method} {request.url.path} from {client_host} ({format_user_agent(user_agent)})")
 
     if model_name not in PROFILE_MODELS:
-        with state.global_lock:
-            loaded = [
-                name
-                for name, srv in state.active_servers.items()
-                if srv.get("process") and srv["process"].poll() is None
-            ]
-        if loaded:
-            base = loaded[0]
-            model_name = next(
-                (k for k, v in PROFILE_MODELS.items() if v["base"] == base),
-                None,
-            )
-            if model_name and model_name != body.get("model"):
-                logger.info(f"🔄 Auto-switch: {body.get('model')} -> {model_name} (using loaded {base})")
+        orig_name = body.get("model")
+        # Priority 1: use the profile pinned by `allma launch` / /v1/load
+        if state.default_profile and state.default_profile in PROFILE_MODELS:
+            model_name = state.default_profile
+            logger.info(f"Auto-switch: {orig_name} -> {model_name} (pinned default)")
+        else:
+            # Priority 2: fall back to any currently loaded model
+            with state.global_lock:
+                loaded = [
+                    name
+                    for name, srv in state.active_servers.items()
+                    if srv.get("process") and srv["process"].poll() is None
+                ]
+            if loaded:
+                base = loaded[0]
+                model_name = next(
+                    (k for k, v in PROFILE_MODELS.items() if v["base"] == base),
+                    None,
+                )
+                if model_name and model_name != orig_name:
+                    logger.info(f"Auto-switch: {orig_name} -> {model_name} (using loaded {base})")
         if not model_name or model_name not in PROFILE_MODELS:
             return JSONResponse(
                 status_code=404,
@@ -287,7 +249,7 @@ async def messages(request: Request, body: dict = Body(...)):
     max_output_cap = max_model_len // 4
     requested = body.get("max_tokens", max_output_cap)
     if requested > max_output_cap:
-        logger.info(f"⚠️  max_tokens {requested} -> {max_output_cap}")
+        logger.info(f" max_tokens {requested} -> {max_output_cap}")
         body["max_tokens"] = max_output_cap
 
     logger.debug(f"{model_name} -> {base_name}:{port} ({backend})")
@@ -327,7 +289,6 @@ async def messages(request: Request, body: dict = Body(...)):
             return JSONResponse(status_code=500, content={"error": str(e)})
 
     # llama.cpp — translate Anthropic Messages ↔ OpenAI Chat format
-    import json as _json
     import uuid as _uuid
 
     # ── Convert tool definitions (Anthropic → OpenAI) ──
@@ -591,7 +552,6 @@ async def messages(request: Request, body: dict = Body(...)):
             )
         else:
             resp = await client.post(url, json=llama_req_body)
-            msg_id = f"msg_{_uuid.uuid4().hex[:24]}"
             oai = resp.json()
             choice = oai["choices"][0]
             message = choice.get("message", {})
@@ -765,6 +725,32 @@ async def shutdown_endpoint():
     return JSONResponse({"status": "shutting down"})
 
 
+@app.post("/v1/unload")
+async def unload_model(body: dict = Body(...)):
+    """Unload a running base model immediately, freeing its VRAM."""
+    base_name = body.get("model", "")
+    if not base_name:
+        return JSONResponse(status_code=400, content={"error": "model required"})
+    with state.global_lock:
+        running = list(state.active_servers.keys())
+    if base_name not in running:
+        # Accept profile names too — resolve to base
+        if base_name in PROFILE_MODELS:
+            base_name = PROFILE_MODELS[base_name].get("base", base_name)
+    if base_name not in running and base_name not in state.active_servers:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"'{base_name}' is not loaded", "loaded": running},
+        )
+    shutdown_server(base_name, reason="manual unload")
+    # Clear default_profile if it pointed to this base model
+    if state.default_profile and state.default_profile in PROFILE_MODELS:
+        if PROFILE_MODELS[state.default_profile].get("base") == base_name:
+            state.default_profile = None
+            logger.info("Default profile cleared (model unloaded)")
+    return JSONResponse({"status": "unloaded", "model": base_name})
+
+
 @app.post("/v1/load")
 async def load_model(body: dict = Body(...)):
     """Pre-load a model without generating any tokens."""
@@ -780,6 +766,10 @@ async def load_model(body: dict = Body(...)):
     cfg = BASE_MODELS[base_name]
     backend = cfg.get("backend", "vllm")
     await ensure_base_model(base_name, model_name, gpu_id=gpu_id)
+    # Pin this profile as the default for unknown model names (e.g. "claude-sonnet-4-5")
+    # so that `allma launch claude <model>` always routes to the intended model.
+    state.default_profile = model_name
+    logger.info(f"Default profile set to '{model_name}'")
     return JSONResponse({"status": "loaded", "model": model_name, "backend": backend})
 
 
@@ -805,7 +795,6 @@ def show_banner():
     from rich.align import Align
     from rich.console import Console, Group
     from rich.panel import Panel
-    from rich.rule import Rule
     from rich.table import Table
     from rich.text import Text
 

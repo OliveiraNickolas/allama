@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR, PATH_TO_ALLMA
+from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR
 import core.state as state
 from core.gpu import get_free_gpu_memory, get_model_vram_need, get_all_gpus
 from core.process import (
@@ -23,7 +23,6 @@ from core.process import (
     save_backend_pid,
 )
 from core.error_detector import ErrorDetector, tail_file
-from core.bootstrap import BootstrapDetector
 
 
 # ==============================================================================
@@ -171,20 +170,15 @@ async def wait_for_model_ready(
     deadline = time.time() + timeout
     log_position = log_start_position
 
-    spinner = LoadingSpinner(f"Loading {displayname} - Timeout: {timeout}s")
+    spinner = LoadingSpinner(f"Loading {displayname}")
     spinner.start()
 
     try:
         while time.time() < deadline:
-            try:
-                returncode = proc.poll()
-                if returncode is not None:
-                    spinner.stop(success=False)
-                    logger.error(f"{displayname} exited with code {returncode} during loading")
-                    return False
-            except Exception as e:
+            returncode = proc.poll()
+            if returncode is not None:
                 spinner.stop(success=False)
-                logger.error(f"{displayname}: error checking process state: {e}")
+                logger.error(f"{displayname} exited with code {returncode} during loading")
                 return False
 
             try:
@@ -193,29 +187,12 @@ async def wait_for_model_ready(
                     new_content = f.read()
                     log_position = f.tell()
 
-                    # Detectar erros conhecidos em tempo real
-                    error_analysis = ErrorDetector.analyze_log(new_content)
-                    if error_analysis:
-                        spinner.stop(success=False)
-                        logger.warning(f"{error_analysis.error_type}: {error_analysis.explanation}")
-                        logger.debug(f"   Raw: {error_analysis.raw_message}")
-                        if error_analysis.auto_fix_available:
-                            logger.info(f"Attempting auto-fix: {error_analysis.auto_fix_action}")
-                            state.last_error_analysis[basename] = error_analysis
-                            return False
-                        else:
-                            for suggestion in error_analysis.suggestions:
-                                logger.warning(f"   → {suggestion}")
-                            state.last_error_analysis[basename] = error_analysis
-                            # Continuar aguardando, pode ser apenas warning
-
                     for line in new_content.splitlines():
                         if line.strip():
                             logger.debug(f"[{displayname}] {line}")
                             for expected_signal in signals:
                                 if expected_signal in line:
                                     spinner.stop(success=True)
-                                    logger.info(f"🎉 {displayname} ready: {expected_signal}")
                                     await asyncio.sleep(1)
                                     return True
             except Exception as e:
@@ -227,10 +204,9 @@ async def wait_for_model_ready(
                         s.settimeout(0.5)
                         if s.connect_ex(("127.0.0.1", port)) == 0:
                             spinner.stop(success=True)
-                            logger.info(f"{displayname}:{port} ready")
                             return True
                 except (ConnectionRefusedError, OSError, TimeoutError):
-                    pass  # Server not ready yet
+                    pass
 
             await asyncio.sleep(1)
 
@@ -239,13 +215,72 @@ async def wait_for_model_ready(
         return False
     except Exception as e:
         spinner.stop(success=False)
-        logger.error(f"Error during model loading: {e}")
+        logger.error(f"Error waiting for {displayname}: {e}")
         raise
 
 
 # ==============================================================================
 # AUTO-FIX HELPERS
 # ==============================================================================
+def save_config_to_file(basename: str, cfg: dict) -> bool:
+    """Save config back to .allm file. Returns True if successful."""
+    try:
+        from core.config import CONFIG_DIR
+        config_file = CONFIG_DIR / "base" / f"{basename}.allm"
+        if not config_file.exists():
+            logger.warning(f"Config file not found: {config_file}")
+            return False
+
+        # Read original file to preserve formatting
+        with open(config_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Update only the specific keys that were auto-fixed
+        lines = content.split('\n')
+        new_lines = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Check if this line is a key we need to update
+            if '=' in stripped and not stripped.startswith('#'):
+                key = stripped.split('=')[0].strip()
+
+                if key == 'extra_args':
+                    # Handle multi-line extra_args
+                    new_lines.append('extra_args = [')
+                    extra_args = cfg.get('extra_args', [])
+                    for arg in extra_args:
+                        new_lines.append(f'    "{arg}",')
+                    new_lines.append(']')
+                    # Skip original extra_args block
+                    i += 1
+                    while i < len(lines) and ']' not in lines[i]:
+                        i += 1
+                    i += 1
+                    continue
+
+                elif key in ['n_ctx', 'n_batch', 'max_num_seqs', 'max_model_len']:
+                    if key in cfg:
+                        new_lines.append(f'{key} = {cfg[key]}')
+                        i += 1
+                        continue
+
+            new_lines.append(line)
+            i += 1
+
+        # Write back
+        with open(config_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(new_lines))
+
+        logger.info(f"Config saved: {config_file}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save config: {e}")
+        return False
+
+
 def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
     """Apply auto-fix to config based on error analysis. Returns True if applied."""
     if not error_analysis or not error_analysis.auto_fix_available:
@@ -255,7 +290,7 @@ def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
     attempt_count = state.auto_fix_attempt_count.get(basename, 0)
 
     if attempt_count >= 3:
-        logger.warning(f"⚠️  Auto-fix max attempts (3) reached for {basename}, skipping")
+        logger.warning(f" Auto-fix max attempts (3) reached for {basename}, skipping")
         return False
 
     if action == "reduce_ubatch_size":
@@ -264,7 +299,8 @@ def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
         if new < current:
             cfg["max_num_seqs"] = str(new)
             state.auto_fix_attempt_count[basename] = attempt_count + 1
-            logger.info(f"🔧 Auto-fix: reduced max_num_seqs {current} → {new} (attempt {attempt_count + 1}/3)")
+            logger.info(f"Auto-fix: reduced max_num_seqs {current} → {new} (attempt {attempt_count + 1}/3)")
+            save_config_to_file(basename, cfg)
             return True
 
     elif action == "reduce_batch_params":
@@ -275,7 +311,8 @@ def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
             if new < current:
                 cfg["max_num_seqs"] = str(new)
                 state.auto_fix_attempt_count[basename] = attempt_count + 1
-                logger.info(f"🔧 Auto-fix: reduced max_num_seqs {current} → {new}")
+                logger.info(f"Auto-fix: reduced max_num_seqs {current} → {new}")
+                save_config_to_file(basename, cfg)
                 return True
 
     elif action == "reduce_context_length":
@@ -284,7 +321,8 @@ def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
         if new < current:
             cfg["max_model_len"] = str(new)
             state.auto_fix_attempt_count[basename] = attempt_count + 1
-            logger.info(f"🔧 Auto-fix: reduced max_model_len {current} → {new}")
+            logger.info(f"Auto-fix: reduced max_model_len {current} → {new}")
+            save_config_to_file(basename, cfg)
             return True
 
     elif action == "increase_defrag_threshold":
@@ -297,7 +335,8 @@ def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
                     new_val = max(0.01, current_val / 2)
                     extra_args[i + 1] = str(new_val)
                     state.auto_fix_attempt_count[basename] = attempt_count + 1
-                    logger.info(f"🔧 Auto-fix: increased defrag from {current_val} → {new_val}")
+                    logger.info(f"Auto-fix: increased defrag from {current_val} → {new_val}")
+                    save_config_to_file(basename, cfg)
                     return True
                 except ValueError:
                     pass
@@ -316,7 +355,7 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
     # Honour pinned_gpu from config if caller did not specify a gpu_id
     if gpu_id is None and "pinned_gpu" in cfg:
         gpu_id = int(cfg["pinned_gpu"])
-        logger.info(f"📌 {basename}: pinned_gpu={gpu_id} from config")
+        logger.info(f"{basename}: pinned_gpu={gpu_id} from config")
     backend = cfg.get("backend", "vllm")
     displayname = profilename or basename
 
@@ -326,7 +365,7 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
             if proc.poll() is None:
                 port = state.active_servers[basename]["port"]
                 state.server_idle_time[basename] = time.time()
-                logger.debug(f"♻️  Reusing {displayname}:{port}")
+                logger.debug(f" Reusing {displayname}:{port}")
                 return port
 
         already_loading = basename in state.loading_models
@@ -334,7 +373,7 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
             state.loading_models.add(basename)
 
     if already_loading:
-        logger.info(f"⏳ {displayname} already loading, waiting...")
+        logger.info(f"{displayname} already loading, waiting...")
         for _ in range(150):
             await asyncio.sleep(2)
             with state.global_lock:
@@ -343,7 +382,7 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
                     if proc and proc.poll() is None:
                         port = state.active_servers[basename]["port"]
                         state.server_idle_time[basename] = time.time()
-                        logger.debug(f"♻️  Reusing {displayname}:{port} after wait")
+                        logger.debug(f" Reusing {displayname}:{port} after wait")
                         return port
                 if basename not in state.loading_models:
                     # Primary loader finished — check if it succeeded
@@ -372,267 +411,153 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
 async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: str, gpu_id: Optional[int] = None) -> int:
     """Internal implementation of model loading."""
     NEEDGB = get_model_vram_need(cfg, basename)
-    logger.info(f"🧮 {displayname} needs {NEEDGB:.1f}GB VRAM")
+    logger.info(f"{displayname} needs {NEEDGB:.1f}GB VRAM")
 
-    # Bootstrap: Calibrate model if hardware profile available
-    calib = None
-    if state.hardware_profile and basename not in state.bootstrap_calibrations:
-        try:
-            logger.info(f"📊 Calibrating {displayname}...")
-            calib = await BootstrapDetector.calibrate_for_model(
-                base_name=basename,
-                model_size_gb=NEEDGB,
-                hardware_profile=state.hardware_profile,
-                config=cfg,
-            )
-            state.bootstrap_calibrations[basename] = calib
-
-            logger.info(
-                f"   Recommended: TP={calib.recommended_tp}, "
-                f"ubatch={calib.recommended_ubatch_size}, "
-                f"cache={calib.recommended_cache_dtype}, "
-                f"confidence={calib.confidence}"
-            )
-
-            if calib.warnings:
-                for warn in calib.warnings:
-                    logger.warning(f"   ⚠️  {warn}")
-
-        except Exception as e:
-            logger.debug(f"Calibration failed: {e}, continuing with static config")
-    else:
-        calib = state.bootstrap_calibrations.get(basename)
-
-    # Determine if this model needs more than one GPU can provide.
-    # We compare NEEDGB against the usable capacity of the best single GPU
-    # (total * gpu_memory_utilization). If it exceeds that, the model will
-    # require tensor parallelism across multiple GPUs and we should check
-    # total VRAM rather than max single-GPU free VRAM.
+    # VRAM check — unload other models if needed
     _all_gpus_info = get_all_gpus()
     _gpu_mem_util = float(cfg.get("gpu_memory_utilization", "0.90"))
-    _max_single_gpu_usable = max(
-        (g["total_gb"] * _gpu_mem_util for g in _all_gpus_info), default=0.0
-    )
-    needs_multi_gpu = backend == "vllm" and NEEDGB > _max_single_gpu_usable
+    _max_single_usable = max((g["total_gb"] * _gpu_mem_util for g in _all_gpus_info), default=0.0)
+    gpus = get_free_gpu_memory()
+    max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)
+    _llama_pinned   = backend == "llama.cpp" and int(cfg.get("gpu_id", -1)) >= 0
+    needs_multi_gpu = (backend == "vllm" and NEEDGB > _max_single_usable) or \
+                      (backend == "llama.cpp" and not _llama_pinned and NEEDGB > max_free_gb)
+    available_gb = sum(g["free_gb"] for g in gpus) if needs_multi_gpu else max_free_gb
 
-    if needs_multi_gpu:
-        logger.info(
-            f"🔄 {displayname}: needs {NEEDGB:.1f}GB > single GPU usable {_max_single_gpu_usable:.1f}GB "
-            f"— will use multi-GPU (TP>1)"
-        )
-
-    maxretries = 3
-    no_progress_count = 0
-    last_total_gb = 0.0
-    max_free_gb = 0.0
-
-    for attempt in range(maxretries):
-        gpus = get_free_gpu_memory()
-        max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)
-        total_free_gb = sum(g["free_gb"] for g in gpus)
-        logger.info(
-            f"📊 VRAM max single: {max_free_gb:.1f}GB / total: {total_free_gb:.1f}GB - "
-            f"Attempt {attempt + 1}/{maxretries} (need {NEEDGB:.1f}GB)"
-        )
-        available_gb = total_free_gb if (needs_multi_gpu or backend == "llama.cpp") else max_free_gb
-        if available_gb >= NEEDGB:
-            logger.info(f"✅ VRAM sufficient ({available_gb:.1f}GB)")
-            break
-
+    if available_gb < NEEDGB:
         with state.global_lock:
             names_to_unload = [n for n in state.active_servers if n != basename]
-
         for name in names_to_unload:
-            logger.info(f"📤 Unloading {name} (dynamic swap)")
-            shutdown_server(name, "swap-dynamic", fast=True)
-            last_total_gb = total_free_gb
-
+            logger.info(f"Unloading {name} to free VRAM")
+            shutdown_server(name, "swap", fast=True)
         kill_vram_fast()
+        await asyncio.sleep(3)
 
         gpus = get_free_gpu_memory()
-        new_total_gb = sum(g["free_gb"] for g in gpus)
-        if new_total_gb <= last_total_gb + 0.5:
-            no_progress_count += 1
-            if no_progress_count >= 2:
-                gpu_procs = list_gpu_processes()
-                active_procs = [p for p in gpu_procs if p["memory_mb"] > 100]
-                if active_procs:
-                    logger.error("🚨 Processes using VRAM:")
-                    with state.global_lock:
-                        active_server_pids = {s["process"].pid for s in state.active_servers.values()}
-                    for p in sorted(active_procs, key=lambda x: x["memory_mb"], reverse=True)[:5]:
-                        is_allma = p["pid"] in active_server_pids
-                        marker = "ALLMA" if is_allma else "external"
-                        logger.error(f"  PID {p['pid']} ({p['name']}): {p['memory_mb']//1024:.0f}GB [{marker}]")
-                logger.error(
-                    f"⚠️  Failed to free enough VRAM. "
-                    f"Required: {NEEDGB:.1f}GB, available: {new_total_gb:.1f}GB."
-                )
-                raise RuntimeError(
-                    f"Not enough VRAM to load {displayname}. "
-                    f"Model needs {NEEDGB:.1f}GB but system only has {new_total_gb:.1f}GB free."
-                )
-        last_total_gb = new_total_gb
-        await asyncio.sleep(5)
+        max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)
+        available_gb = sum(g["free_gb"] for g in gpus) if needs_multi_gpu else max_free_gb
+        if available_gb < NEEDGB:
+            gpu_procs = list_gpu_processes()
+            active_procs = [p for p in gpu_procs if p["memory_mb"] > 100]
+            if active_procs:
+                with state.global_lock:
+                    allma_pids = {s["process"].pid for s in state.active_servers.values()}
+                for p in sorted(active_procs, key=lambda x: x["memory_mb"], reverse=True)[:5]:
+                    tag = "allma" if p["pid"] in allma_pids else "external"
+                    logger.error(f"  PID {p['pid']} ({p['name']}): {p['memory_mb']//1024:.0f}GB [{tag}]")
+            raise RuntimeError(
+                f"Not enough VRAM: {displayname} needs {NEEDGB:.1f}GB, only {available_gb:.1f}GB free"
+            )
 
-    await asyncio.sleep(2)
-    gpus = get_free_gpu_memory()
-    available_final = (
-        sum(g["free_gb"] for g in gpus)
-        if (needs_multi_gpu or backend == "llama.cpp")
-        else max((g["free_gb"] for g in gpus), default=0.0)
-    )
-    if available_final < NEEDGB:
-        logger.warning(
-            f"⚠️  VRAM insuficiente: {available_final:.1f}GB < {NEEDGB:.1f}GB, "
-            f"continuando e esperando que o backend gerencie memória."
-        )
+    logger.info(f"Loading {displayname} ({backend})")
 
-    logger.info(f"⏳ Loading {displayname} ({backend})")
+    import subprocess as _sp
 
-    max_attempts = 5
-    skip_gpu: int | None = None
+    logfilepath = ALLMA_LOG_DIR / f"{basename}.log"
+    logfile = None
+    try:
+        logfile = open(logfilepath, "a+")
+        log_start_position = logfile.tell()
+    except Exception as e:
+        logger.error(f"Failed to open log file {logfilepath}: {e}")
+        raise
 
-    for attempt in range(max_attempts):
-        logfilepath = ALLMA_LOG_DIR / f"{basename}.log"
-        logfile = None
-        try:
-            logfile = open(logfilepath, "a+")
-            log_start_position = logfile.tell()
-        except Exception as e:
-            logger.error(f"Failed to open log file {logfilepath}: {e}")
-            raise
+    if backend == "vllm":
+        cmd, port, current_gpu_id = build_vllm_cmd(basename, gpu_id=gpu_id)
+    else:
+        cmd, port, current_gpu_id = build_llama_cmd(basename, gpu_id=gpu_id)
+
+    tp_from_cmd = 1
+    try:
+        tp_idx = cmd.index("--tensor-parallel-size") + 1
+        if tp_idx < len(cmd):
+            tp_from_cmd = int(cmd[tp_idx])
+    except (ValueError, IndexError):
+        pass
+
+    proc = None
+    try:
+        subprocess_env = os.environ.copy()
+        venv_bin = str(Path(__file__).parent.parent / "venv" / "bin")
+        current_path = subprocess_env.get("PATH", "")
+        if venv_bin not in current_path.split(os.pathsep):
+            subprocess_env["PATH"] = venv_bin + os.pathsep + current_path
 
         if backend == "vllm":
-            cmd, port, current_gpu_id = build_vllm_cmd(basename, skip_gpu=skip_gpu, gpu_id=gpu_id, calib=calib)
-        else:
-            cmd, port, current_gpu_id = build_llama_cmd(basename, gpu_id=gpu_id, calib=calib)
+            if tp_from_cmd <= 1:
+                subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
+            else:
+                gpu_indices = ",".join(str(current_gpu_id + i) for i in range(tp_from_cmd))
+                subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_indices
+                logger.info(f"TP={tp_from_cmd} on GPUs [{gpu_indices}]")
+        elif backend == "llama.cpp":
+            if max_free_gb >= NEEDGB:
+                subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
+            else:
+                # Primary GPU first so it becomes CUDA0 (larger shard + mmproj land there)
+                all_gpu_ids = [g["index"] for g in _all_gpus_info]
+                ordered = [current_gpu_id] + [g for g in all_gpu_ids if g != current_gpu_id]
+                subprocess_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in ordered)
+                logger.info(f"llama.cpp multi-GPU: [{subprocess_env['CUDA_VISIBLE_DEVICES']}]")
 
-        tp_from_cmd = 1
-        try:
-            tp_idx = cmd.index("--tensor-parallel-size") + 1
-            if tp_idx < len(cmd):
-                tp_from_cmd = int(cmd[tp_idx])
-        except (ValueError, IndexError):
-            pass
-        logger.info(f"🎯 Attempt {attempt + 1}/{max_attempts}: {displayname} → GPU {current_gpu_id} (TP={tp_from_cmd})")
-        proc = None
-        try:
-            subprocess_env = os.environ.copy()
-            # Prepend the venv bin dir so vllm sub-processes (ninja, etc.) are found
-            venv_bin = str(Path(__file__).parent.parent / "venv" / "bin")
-            current_path = subprocess_env.get("PATH", "")
-            if venv_bin not in current_path.split(os.pathsep):
-                subprocess_env["PATH"] = venv_bin + os.pathsep + current_path
-            if backend == "vllm":
-                if tp_from_cmd <= 1:
-                    subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
-                    logger.info(f"🎮 vLLM TP=1 pinned to GPU {current_gpu_id} via CUDA_VISIBLE_DEVICES")
-                else:
-                    gpu_indices = ",".join(str(current_gpu_id + i) for i in range(tp_from_cmd))
-                    subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_indices
-                    logger.info(f"🎮 vLLM TP={tp_from_cmd} pinned to GPUs [{gpu_indices}] via CUDA_VISIBLE_DEVICES")
-            elif backend == "llama.cpp" and int(cfg.get("tensor_parallel", "1")) == 1:
-                if max_free_gb >= NEEDGB:
-                    subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
-                    logger.info(f"🎮 llama.cpp TP=1 pinned to GPU {current_gpu_id} via CUDA_VISIBLE_DEVICES")
-                else:
-                    # Multi-GPU offload: put the pinned/preferred GPU first so it becomes
-                    # CUDA0 — this ensures the model's larger shard AND mmproj land on it.
-                    all_gpus = [g["index"] for g in get_all_gpus()]
-                    ordered = [current_gpu_id] + [g for g in all_gpus if g != current_gpu_id]
-                    gpu_order = ",".join(str(g) for g in ordered)
-                    subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_order
-                    logger.info(f"🎮 llama.cpp multi-GPU offload, GPU order [{gpu_order}] (primary={current_gpu_id})")
+        proc = _sp.Popen(
+            cmd,
+            stdout=logfile,
+            stderr=_sp.STDOUT,
+            text=True,
+            bufsize=1,
+            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+            env=subprocess_env,
+        )
 
-            import subprocess as _sp
-            proc = _sp.Popen(
-                cmd,
-                stdout=logfile,
-                stderr=_sp.STDOUT,
-                text=True,
-                bufsize=1,
-                preexec_fn=os.setsid if hasattr(os, "setsid") else None,
-                env=subprocess_env,
-            )
+        with state.global_lock:
+            state.active_servers[basename] = {
+                "process": proc,
+                "pid": proc.pid,
+                "port": port,
+                "backend": backend,
+                "logfile": logfilepath,
+            }
+            state.server_idle_time[basename] = time.time()
 
-            with state.global_lock:
-                state.active_servers[basename] = {
-                    "process": proc,
-                    "pid": proc.pid,
-                    "port": port,
-                    "backend": backend,
-                    "logfile": logfilepath,
-                }
-                state.server_idle_time[basename] = time.time()
+        save_backend_pid(basename, proc.pid, port, backend)
+        logger.info(f"PID {proc.pid} on port {port} (GPU {current_gpu_id}, TP={tp_from_cmd})")
 
-            save_backend_pid(basename, proc.pid, port, backend)
-            logger.info(f"✅ Process started PID {proc.pid} on port {port}, GPU {current_gpu_id}")
-            logger.info(f"📄 Log: tail -f {logfilepath}")
+        ready = await wait_for_model_ready(
+            proc, port, backend, logfilepath, displayname,
+            timeout=300, log_start_position=log_start_position,
+        )
 
-            ready = await wait_for_model_ready(
-                proc, port, backend, logfilepath, displayname,
-                timeout=300, log_start_position=log_start_position,
-            )
+        if not ready:
+            returncode = proc.poll()
+            if returncode is not None:
+                logger.error(f"{displayname} exited with code {returncode}")
+                logfile.seek(log_start_position)
+                log_content = logfile.read()
+                error_analysis = ErrorDetector.analyze_log(log_content)
+                if error_analysis:
+                    logger.error(f"{error_analysis.error_type}: {error_analysis.explanation}")
+                    for suggestion in error_analysis.suggestions:
+                        logger.error(f"   • {suggestion}")
+                    state.last_error_analysis[basename] = error_analysis
+                raise RuntimeError(f"{displayname} startup failed (code {returncode})")
+            raise RuntimeError(f"{displayname} not ready after 300s")
 
-            if not ready:
-                returncode = proc.poll()
-                if returncode is not None:
-                    logger.error(f"{displayname}:{port} exited with code {returncode}")
-                    logfile.seek(log_start_position)
-                    log_content = logfile.read()
+        logger.info(f"{displayname} loaded on GPU {current_gpu_id}")
+        return port
 
-                    # Analisar erro em detalhe
-                    error_analysis = ErrorDetector.analyze_log(log_content)
-                    if error_analysis:
-                        logger.error(
-                            f"❌ Falha ao carregar {displayname}\n"
-                            f"   Tipo: {error_analysis.error_type}\n"
-                            f"   Detalhes: {error_analysis.explanation}"
-                        )
-                        for suggestion in error_analysis.suggestions:
-                            logger.error(f"   • {suggestion}")
-                        state.last_error_analysis[basename] = error_analysis
-
-                        # Tentar auto-fix se disponível
-                        if apply_auto_fix(basename, cfg, error_analysis):
-                            logger.info(f"♻️  Retrying with auto-fix... (attempt {attempt + 2}/{max_attempts})")
-                            # Limpar processo e continuar para próximo attempt
-                            with state.global_lock:
-                                if state.active_servers.get(basename):
-                                    state.active_servers.pop(basename, None)
-                                    state.server_idle_time.pop(basename, None)
-                            continue
-                        # Sem auto-fix disponível, reportar erro e falhar
-
-                    # Fallback antigo: VRAM detection
-                    if "Free memory" in log_content and "less than desired" in log_content:
-                        logger.warning(
-                            f"💥 VRAM allocation failed on GPU {current_gpu_id}, retrying with adjusted config..."
-                        )
-                        raise RuntimeError("VRAM allocation failed")
-                    raise RuntimeError(f"{displayname} startup failed (code {returncode})")
-                raise RuntimeError(f"{displayname} not ready after 300s")
-
-            logger.info(f"🚀 {displayname} loaded and ready on GPU {current_gpu_id}")
-            return port
-
-        except RuntimeError as runtime_err:
-            with state.global_lock:
-                if state.active_servers.get(basename):
-                    p = state.active_servers[basename].get("process")
-                    if p:
-                        try:
-                            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                        except Exception:
-                            pass
-                    state.active_servers.pop(basename, None)
-                    state.server_idle_time.pop(basename, None)
-            # NOTE: Don't skip GPU on VRAM allocation errors — if TP>1, skipping breaks tensor parallelism
-            # (reduces TP to 1 which also won't fit). User must adjust model parameters instead.
-            raise
-        finally:
-            if logfile and not logfile.closed:
-                logfile.close()
-
-    raise RuntimeError(f"Model {displayname} failed to load after all attempts")
+    except RuntimeError:
+        with state.global_lock:
+            if state.active_servers.get(basename):
+                p = state.active_servers[basename].get("process")
+                if p:
+                    try:
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                    except Exception:
+                        pass
+                state.active_servers.pop(basename, None)
+                state.server_idle_time.pop(basename, None)
+        raise
+    finally:
+        if logfile and not logfile.closed:
+            logfile.close()

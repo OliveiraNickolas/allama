@@ -4,7 +4,6 @@ Hardware detection and model auto-calibration.
 Detects GPU capabilities at startup and calibrates each model's parameters
 based on available VRAM, compute capability, and hardware profile.
 """
-import asyncio
 import json
 import re
 import subprocess
@@ -14,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List
 
-from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR
+from core.config import logger, ALLMA_LOG_DIR
 from core.gpu import (
     get_all_gpus,
     _estimate_kv_cache_gb,
@@ -262,9 +261,6 @@ class BootstrapDetector:
         else:
             # llama.cpp: TP not standard, just use single GPU best fit
             recommended_tp = 1
-
-        if recommended_tp > 1:
-            warnings.append(f"TP={recommended_tp} requires {recommended_tp} GPU slots")
 
         # Decide ubatch-size (vLLM only)
         recommended_ubatch_size = 1024

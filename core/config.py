@@ -9,16 +9,35 @@ import sys
 from pathlib import Path
 
 try:
-    from rich import box
-    from rich.align import Align
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.rule import Rule
-    from rich.table import Table
-    from rich.text import Text
+    from rich.console import Console as _Console  # noqa: F401 — presence check only
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
+
+
+# ==============================================================================
+# .env LOADER — must run before any os.environ reads
+# ==============================================================================
+def _load_dotenv() -> None:
+    """Load .env from the project root into os.environ (existing vars take priority)."""
+    env_file = Path(__file__).parent.parent / ".env"
+    if not env_file.exists():
+        return
+    try:
+        with env_file.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        pass  # never crash on .env parse errors
+
+_load_dotenv()
 
 
 # ==============================================================================
@@ -214,8 +233,7 @@ def format_user_agent(ua: str) -> str:
 # ==============================================================================
 def load_models_from_configs() -> tuple[dict, dict]:
     try:
-        import sys as _sys
-        _sys.path.insert(0, str(SCRIPT_DIR))
+        sys.path.insert(0, str(SCRIPT_DIR))
         from configs.loader import load_models_from_configs as _load
         return _load(str(CONFIG_DIR))
     except FileNotFoundError as e:

@@ -1,8 +1,6 @@
 backend = "vllm"
-path = "/home/nick/AI/Models/Qwen3.6-35B-A3B-FP8"
-tokenizer = "/home/nick/AI/Models/Qwen3.6-35B-A3B-FP8"
-
-
+path = "/path/to/Models/Qwen3.6-35B-A3B-FP8"
+tokenizer = "/path/to/Models/Qwen3.6-35B-A3B-FP8"
 gpu_memory_utilization = "0.93"
 max_model_len = 134000
 max_num_seqs = 4

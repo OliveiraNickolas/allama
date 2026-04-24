@@ -48,9 +48,11 @@ secrets.json
 .DS_Store
 Thumbs.db
 
-# Allama specific
-!configs/*.allm
-!test_*
-tests/
+# Allma specific
+# Base configs contain machine-specific paths — users copy from .example and customize
+configs/base/*.allm
+!configs/base/*.allm.example
+# Profile configs have no paths and are safe to commit
+debug.log
 *.Zone.Identifier
-configs/profiles/
+.claude/

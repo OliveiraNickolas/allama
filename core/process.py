@@ -12,6 +12,8 @@ from typing import Any, Dict, Optional
 import psutil
 
 from core.config import logger, BASE_MODELS, LLAMA_CPP_PATH, VLLM_PATH, ALLMA_LOG_DIR
+from core.model_detect import get_auto_extra_args, get_auto_max_model_len, get_family_label
+from core.gpu import find_optimal_tp_and_gpus, get_best_gpu, get_free_gpu_memory
 import core.state as state
 
 # ==============================================================================
@@ -70,7 +72,7 @@ def cleanup_orphaned_backends():
             is_vllm = "vllm" in cmdline and "serve" in cmdline
             is_llama = "llama-server" in cmdline or "llama.cpp" in cmdline
             if is_vllm or is_llama:
-                logger.info(f"🧹 Killing orphaned backend: {name} (PID {pid}, {info.get('backend')})")
+                logger.info(f"Killing orphaned backend: {name} (PID {pid}, {info.get('backend')})")
                 kill_process_tree(pid, timeout=3)
                 killed += 1
             else:
@@ -85,22 +87,15 @@ def cleanup_orphaned_backends():
 
     if killed:
         time.sleep(2)
-        from core.gpu import get_free_gpu_memory
         gpus = get_free_gpu_memory()
         freegb = sum(g["free_gb"] for g in gpus)
-        logger.info(f"🧹 Cleaned up {killed} orphaned backend(s). VRAM free: {freegb:.1f}GB")
-from core.gpu import (
-    find_optimal_tp_and_gpus,
-    get_best_gpu,
-    get_free_gpu_memory,
-    get_all_gpus,
-)
+        logger.info(f"Cleaned up {killed} orphaned backend(s). VRAM free: {freegb:.1f}GB")
 
 
 # ==============================================================================
 # COMMAND BUILDERS
 # ==============================================================================
-def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | None = None, calib: Any | None = None) -> tuple[list, int, int]:
+def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | None = None) -> tuple[list, int, int]:
     """Build vLLM command with GPU and tensor parallelism configuration."""
     cfg = BASE_MODELS[base_name]
 
@@ -108,26 +103,37 @@ def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | No
     while not state.is_port_free(port):
         port = state.get_next_vllm_port()
 
-    # If gpu_id is explicitly specified, use it; otherwise auto-select
+    # Priority: explicit arg > config gpu_id > auto-select
     if gpu_id is not None:
         selected_gpu = gpu_id
         tp_size = int(cfg.get("tensor_parallel", "1"))
-        logger.info(f"🎯 {base_name}: Using explicit GPU {gpu_id} (TP={tp_size})")
+        logger.info(f"{base_name}: Using explicit GPU {gpu_id} (TP={tp_size})")
     else:
-        adj_tp, selected_gpu = find_optimal_tp_and_gpus(base_name, skip_gpu)
-        tp_size = adj_tp
+        try:
+            cfg_pin = int(cfg.get("gpu_id", -1))
+        except (TypeError, ValueError):
+            cfg_pin = -1
+        if cfg_pin >= 0:
+            selected_gpu = cfg_pin
+            tp_size = int(cfg.get("tensor_parallel", "1"))
+            logger.info(f"{base_name}: Pinned to GPU {cfg_pin} (config, TP={tp_size})")
+        else:
+            adj_tp, selected_gpu = find_optimal_tp_and_gpus(base_name, skip_gpu)
+            tp_size = adj_tp
 
-    # Use calibrated TP if available
-    if calib and calib.recommended_tp > 0:
-        tp_size = calib.recommended_tp
-        logger.info(f"🔧 Using calibrated TP={tp_size} from bootstrap detection")
+    max_model_len = get_auto_max_model_len(cfg)
+    extra_args = get_auto_extra_args(cfg, "vllm")
+
+    if "extra_args" not in cfg:
+        family = get_family_label(cfg["path"])
+        logger.info(f"{base_name}: auto-detected family '{family}', applying preset args")
 
     cmd = [
         VLLM_PATH, "serve", cfg["path"],
-        "--tokenizer", cfg["tokenizer"],
+        "--tokenizer", cfg.get("tokenizer", cfg["path"]),
         "--tensor-parallel-size", str(tp_size),
         "--gpu-memory-utilization", str(cfg.get("gpu_memory_utilization", "0.90")),
-        "--max-model-len", str(cfg["max_model_len"]),
+        "--max-model-len", str(max_model_len),
         "--max-num-seqs", str(cfg.get("max_num_seqs", "8")),
         "--generation-config", "vllm",
         "--port", str(port),
@@ -135,24 +141,14 @@ def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | No
         "--api-key", "dummy",
     ]
 
-    # Apply calibrated ubatch-size
-    if calib and calib.recommended_ubatch_size > 0:
-        cmd += ["--ubatch-size", str(calib.recommended_ubatch_size)]
-        logger.info(f"🔧 Using calibrated ubatch-size={calib.recommended_ubatch_size}")
-
-    # Apply calibrated cache dtype
-    if calib and calib.recommended_cache_dtype and calib.recommended_cache_dtype != "auto":
-        cmd += ["--kv-cache-dtype", calib.recommended_cache_dtype]
-        logger.info(f"🔧 Using calibrated cache dtype={calib.recommended_cache_dtype}")
-
     if "max_num_batched_tokens" in cfg:
         cmd += ["--max-num-batched-tokens", str(cfg["max_num_batched_tokens"])]
-    cmd.extend(cfg.get("extra_args", []))
+    cmd.extend(extra_args)
     state.gpu_allocation[base_name] = selected_gpu
     return cmd, port, selected_gpu
 
 
-def build_llama_cmd(base_name: str, gpu_id: int | None = None, calib: Any | None = None) -> tuple[list, int, int]:
+def build_llama_cmd(base_name: str, gpu_id: int | None = None) -> tuple[list, int, int]:
     """Build llama.cpp command with GPU configuration."""
     cfg = BASE_MODELS[base_name]
 
@@ -160,28 +156,33 @@ def build_llama_cmd(base_name: str, gpu_id: int | None = None, calib: Any | None
     while not state.is_port_free(port):
         port = state.get_next_llama_port()
 
-    # If gpu_id is explicitly specified, use it; otherwise auto-select or reuse cached
+    # Priority: explicit arg > config gpu_id > cached allocation > auto-select
     if gpu_id is not None:
         state.gpu_allocation[base_name] = gpu_id
-        logger.info(f"🎯 {base_name} → GPU {gpu_id} (explicit)")
+        logger.info(f"{base_name} → GPU {gpu_id} (explicit)")
     else:
-        gpu_id = state.gpu_allocation.get(base_name)
-        if gpu_id is None:
-            gpu_id = get_best_gpu()
+        try:
+            cfg_pin = int(cfg.get("gpu_id", -1))
+        except (TypeError, ValueError):
+            cfg_pin = -1
+        if cfg_pin >= 0:
+            gpu_id = cfg_pin
             state.gpu_allocation[base_name] = gpu_id
-        logger.info(f"🎯 {base_name} → GPU {gpu_id}")
+            logger.info(f"{base_name} → GPU {gpu_id} (pinned from config)")
+        else:
+            gpu_id = state.gpu_allocation.get(base_name)
+            if gpu_id is None:
+                gpu_id = get_best_gpu()
+                state.gpu_allocation[base_name] = gpu_id
+            logger.info(f"{base_name} → GPU {gpu_id}")
 
-    # Determine n_batch (use calibrated if available)
     n_batch = cfg.get("n_batch", "1024")
-    if calib and calib.recommended_n_batch > 0:
-        n_batch = calib.recommended_n_batch
-        logger.info(f"🔧 Using calibrated n_batch={n_batch}")
-
-    # Determine n_ctx (use calibrated if available)
     n_ctx = cfg.get("n_ctx", "40960")
-    if calib and calib.recommended_n_ctx > 0:
-        n_ctx = calib.recommended_n_ctx
-        logger.info(f"🔧 Using calibrated n_ctx={n_ctx}")
+    extra_args = get_auto_extra_args(cfg, "llama.cpp")
+
+    if "extra_args" not in cfg:
+        family = get_family_label(cfg.get("model", ""))
+        logger.info(f"{base_name}: auto-detected family '{family}', applying preset args")
 
     cmd = [
         LLAMA_CPP_PATH,
@@ -197,7 +198,7 @@ def build_llama_cmd(base_name: str, gpu_id: int | None = None, calib: Any | None
         cmd.extend(["--mmproj", cfg["mmproj"]])
     if cfg.get("chat_template_file") and os.path.exists(cfg["chat_template_file"]):
         cmd.extend(["--chat-template-file", cfg["chat_template_file"]])
-    cmd.extend(cfg.get("extra_args", []))
+    cmd.extend(extra_args)
     return cmd, port, gpu_id
 
 
@@ -248,10 +249,10 @@ def shutdown_server(basename: str, reason: str = "user", fast: bool = False):
         backend = server.get("backend", "unknown")
 
     remove_backend_pid(basename)
-    logger.info(f"📤 Unload {basename}:{port} ({reason})")
+    logger.info(f"Unload {basename}:{port} ({reason})")
 
     if proc and proc.poll() is None:
-        logger.info(f"💀 Killing PID {pid} ({backend})")
+        logger.info(f"Killing PID {pid} ({backend})")
         try:
             pgid = os.getpgid(pid)
             os.killpg(pgid, signal.SIGKILL)
@@ -268,7 +269,7 @@ def shutdown_server(basename: str, reason: str = "user", fast: bool = False):
 
     gpus = get_free_gpu_memory()
     freegb = sum(g["free_gb"] for g in gpus)
-    logger.info(f"🗑️  {basename} unloaded. VRAM free: {freegb:.1f}GB")
+    logger.info(f" {basename} unloaded. VRAM free: {freegb:.1f}GB")
 
 
 def list_gpu_processes(gpu_ids: Optional[list[int]] = None) -> list[Dict[str, Any]]:
@@ -298,7 +299,7 @@ def list_gpu_processes(gpu_ids: Optional[list[int]] = None) -> list[Dict[str, An
 
 def kill_vram_fast():
     """Kill only processes managed by Allma (active_servers)."""
-    logger.info("🔨 Aggressive VRAM shutdown initiated...")
+    logger.info("Aggressive VRAM shutdown initiated...")
     pids_killed = []
 
     known_pids = set()

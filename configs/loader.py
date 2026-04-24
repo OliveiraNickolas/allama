@@ -55,6 +55,11 @@ def parse_all_file(content: str) -> Dict[str, Any]:
             # Remove quotes
             value = value.strip('"').strip("'")
 
+            # Expand ~ in path-like string values
+            if isinstance(value, str) and value.startswith("~/"):
+                import os as _os
+                value = _os.path.expanduser(value)
+
             # Type coercion
             if value.lower() == 'true':
                 value = True

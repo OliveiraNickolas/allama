@@ -1,163 +1,498 @@
 # Allma
 
-A personal LLM model manager with dynamic loading and support for both vLLM and llama.cpp backends.
+A personal LLM manager that sits in front of **vLLM** and **llama.cpp**, giving them a unified OpenAI + Anthropic-compatible API with automatic model loading, VRAM management, and multi-GPU support.
 
-> **Note:** Currently in early stages, designed for personal use.
-
-## Overview
-
-Allma manages multiple LLM models dynamically, automatically handling:
-
-- **Automatic model loading** — Models load on-demand when first requested
-- **Smart VRAM management** — Allocates models to best available GPU based on free memory
-- **Idle model unloading** — Automatically unloads models after being idle to free up VRAM
-- **Multi-backend support** — vLLM for high-performance serving, llama.cpp for flexibility
-- **Unified API** — OpenAI-compatible (`/v1/chat/completions`) and Anthropic Messages API (`/v1/messages`) with full tool calling support
-- **Profile abstraction** — Multiple profiles can share the same base model with different sampling parameters
-- **CLI & Interactive REPL** — Manage the server and chat with models from the terminal
-- **Watchdog daemon** — Auto-restarts on crashes
-
-## Architecture
-
-### Base Models
-
-Define actual model installations (model files + backend configuration).
-
-Location: `configs/base/*.allm`
-
-```ini
-# vLLM backend
-backend = "vllm"
-path = "/path/to/safetensors"
-tokenizer = "/path/to/tokenizer"
-tensor_parallel = "2"
-gpu_memory_utilization = "0.90"
-max_model_len = "131072"
-max_num_seqs = "8"
-extra_args = ["--reasoning-parser", "qwen3", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+```
+Claude Code / OpenAI client / curl
+              │
+              ▼
+         Allma :9000          ← unified API (OpenAI + Anthropic)
+         /v1/chat/completions
+         /v1/messages
+              │
+     ┌────────┴────────┐
+     ▼                 ▼
+  vLLM :8000     llama-server :9001
+  (safetensors)  (GGUF / multimodal)
 ```
 
-```ini
-# llama.cpp backend
-backend = "llama.cpp"
-model = "/path/to/model.gguf"
-mmproj = "/path/to/mmproj.gguf"
-n_ctx = "196608"
-n_batch = "1024"
-n_gpu_layers = "-1"
-n_threads = "8"
-extra_args = ["--jinja", "--flash-attn", "on"]
-```
+**What it does:**
+- Loads models on-demand when a request comes in, unloads them when idle
+- Picks the GPU with the most free VRAM automatically
+- Translates Anthropic Messages API ↔ OpenAI format so llama.cpp models work with Claude Code and other Anthropic-native tools
+- Lets you define multiple "profiles" (different sampling settings) over the same model without loading it twice
 
-### Profile Models
+---
 
-Define how to interact with a base model — which base model it uses plus optional sampling parameter overrides.
+## Requirements
 
-Location: `configs/profile/*.allm`
+| Requirement | Version |
+|-------------|---------|
+| Linux | Ubuntu 20.04+ or equivalent |
+| Python | 3.10+ |
+| NVIDIA GPU | Any with CUDA support |
+| NVIDIA driver | 520+ recommended |
+| CUDA toolkit | 11.8+ (for vLLM) |
 
-```ini
-physical = "Qwen3.5-27b"
+> **macOS / Windows:** Not supported. vLLM requires Linux + CUDA.
 
-[sampling]
-temperature = 0.7
-top_p = 0.8
-top_k = 20
-min_p = 0.0
-presence_penalty = 1.5
-repetition_penalty = 1.0
-```
-
-An unlimited number of profiles can be created for each base model. Models with "instruct" in the logical name automatically have thinking mode disabled.
+---
 
 ## Installation
 
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   pip install fastapi httpx psutil uvicorn rich
-   ```
-3. vLLM and/or llama.cpp must be installed separately. The `llama-server` binary is found automatically via `LLAMA_CPP_PATH` env var, `PATH`, or common build locations.
+```bash
+git clone https://github.com/yourusername/allma
+cd allma
+bash install.sh
+```
 
-## CLI
+The installer:
+1. Creates a Python virtualenv at `allma/venv/`
+2. Installs Python dependencies (`fastapi`, `uvicorn`, `rich`, `textual`, …)
+3. Creates an `allma` command at `~/.local/bin/allma`
+4. Copies `.env.example` → `.env`
+5. Reports whether vLLM and llama-server are found
+
+Make sure `~/.local/bin` is on your PATH. If the installer says it isn't, add this to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-allma serve              # Start server as background daemon
-allma serve -v           # Start in foreground with live logs
-allma stop               # Stop server and all backends
-allma status             # Show server status
-allma list               # List available profiles
-allma ps                 # Show loaded (running) models
-allma logs -f            # Tail allma logs
-allma backend logs       # Tail the running backend's logs
-allma run <model>        # Load a model and open interactive chat
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+---
+
+## Backend Setup
+
+Allma itself is lightweight (FastAPI proxy). The heavy backends — vLLM and llama.cpp — are installed separately. **You only need to install the backend(s) you plan to use.**
+
+### vLLM (for safetensors / FP8 / BF16 models)
+
+Install into the same venv that allma uses:
+
+```bash
+# Basic install (CPU + CUDA auto-detected)
+venv/bin/pip install vllm
+
+# If you need a specific CUDA version:
+venv/bin/pip install vllm --extra-index-url https://download.pytorch.org/whl/cu124
+```
+
+vLLM requires a CUDA-capable GPU. Minimum ~16 GB VRAM for 7B models, ~24 GB for 14B, and so on.
+
+> **Note:** vLLM installation can take 10–20 minutes and downloads several GB. The allma venv already contains the right Python version.
+
+### llama.cpp (for GGUF models)
+
+llama.cpp must be built from source for GPU (CUDA) support:
+
+```bash
+# Prerequisites: cmake, a C++ compiler, CUDA toolkit
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Build with CUDA support
+cmake -B build -DGGML_CUDA=ON
+cmake --build build --config Release -j$(nproc)
+```
+
+The `llama-server` binary will be at `build/bin/llama-server`. Allma auto-detects it from:
+- `LLAMA_CPP_PATH` env var
+- `~/llama.cpp/build/bin/llama-server`
+- `~/AI/llama.cpp/build/bin/llama-server`
+- Any `llama-server` on your `PATH`
+
+Or set it explicitly in `.env`:
+
+```ini
+LLAMA_CPP_PATH=/path/to/llama.cpp/build/bin/llama-server
+```
+
+---
 
 ## Configuration
 
-### Environment Variables
+### How configs work
+
+Allma uses two layers of configuration files in `configs/`:
+
+```
+configs/
+├── base/        ← one file per model installation (path, backend, hardware settings)
+└── profile/     ← one file per "personality" (which base, sampling overrides)
+```
+
+**Base config** — describes a model on disk:
+
+```ini
+# configs/base/MyModel.allm
+
+backend = "vllm"
+path = "/path/to/Models/Qwen3.5-27B-FP8"
+tokenizer = "/path/to/Models/Qwen3.5-27B-FP8"
+gpu_memory_utilization = "0.92"
+max_model_len = 131072
+max_num_seqs = 4
+
+extra_args = [
+    "--reasoning-parser", "qwen3",
+    "--enable-auto-tool-choice",
+    "--tool-call-parser", "qwen3_coder"
+]
+```
+
+```ini
+# configs/base/MyGGUF.allm  (llama.cpp)
+
+backend = "llama.cpp"
+model = "/path/to/Models/model-Q4_K_M.gguf"
+# mmproj = "/path/to/Models/mmproj-f16.gguf"  # optional: enables vision
+
+n_ctx = 65536
+n_gpu_layers = "-1"
+n_threads = "8"
+n_batch = "1024"
+
+extra_args = [
+    "--jinja",
+    "--flash-attn", "on",
+    "--cache-type-k", "q8_0",
+    "--cache-type-v", "q8_0",
+    "--cont-batching"
+]
+```
+
+**Profile config** — describes how to talk to a base model:
+
+```ini
+# configs/profile/MyModel-Instruct.allm
+
+name = "MyModel:Instruct"
+base = "MyModel"          # matches the base config filename (without .allm)
+enable_thinking = false   # disable chain-of-thought
+
+[sampling]
+temperature = 0.7
+top_p = 0.9
+top_k = 40
+min_p = 0.0
+presence_penalty = 0.0
+repetition_penalty = 1.0
+```
+
+### Creating your first config
+
+Example files are provided for every supported model family. Copy one and edit the paths:
+
+```bash
+# vLLM model
+cp configs/base/Qwen3.6-27B-FP8.allm.example configs/base/Qwen3.6-27B-FP8.allm
+# Edit the file and set the correct path
+
+# GGUF model
+cp configs/base/Qwen3.6-35B-A3B-Uncensored-GGUF_Q4.allm.example configs/base/MyGGUF.allm
+# Edit the file and set the correct path
+```
+
+Or use the interactive wizard:
+
+```bash
+allma wizard
+```
+
+The wizard detects your model family, calculates VRAM requirements, and generates both the base config and matching profiles.
+
+### Environment variables
+
+Copy `.env.example` to `.env` and adjust:
+
+```bash
+cp .env.example .env
+```
+
+Key settings:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ALLMA_PORT` | `9000` | Port for the Allma API |
-| `VLLM_BASE_PORT` | `8000` | Starting port range for vLLM backends |
-| `LLAMA_BASE_PORT` | `9001` | Starting port range for llama.cpp backends |
-| `LLAMA_CPP_PATH` | auto-detected | Path to `llama-server` binary |
-| `KEEP_ALIVE_SECONDS` | `600` | Seconds to keep idle models loaded |
-| `HEALTH_CHECK_INTERVAL` | `60` | Health check interval (seconds) |
-| `GPU_MEMORY_THRESHOLD_GB` | `1.0` | Minimum free VRAM to load new models |
-| `AUTO_SWAP_ENABLED` | `true` | Auto-unload idle models when VRAM is needed |
-| `SWAP_IDLE_THRESHOLD` | `300` | Idle seconds before a model becomes swap-eligible |
-| `MAX_MESSAGES` | `0` | Max messages per request (0 = unlimited) |
+| `VLLM_BASE_PORT` | `8000` | First port for vLLM backends |
+| `LLAMA_BASE_PORT` | `9001` | First port for llama.cpp backends |
+| `LLAMA_CPP_PATH` | auto | Path to `llama-server` binary |
+| `KEEP_ALIVE_SECONDS` | `600` | Seconds before an idle model is unloaded |
+| `GPU_MEMORY_THRESHOLD_GB` | `1.0` | Min free VRAM to load a model |
+| `AUTO_SWAP_ENABLED` | `true` | Unload idle models when VRAM is needed |
+| `ALLMA_VISIBLE_DEVICES` | all GPUs | Restrict to specific GPUs, e.g. `"0,1"` |
+| `MAX_MESSAGES` | `0` | Truncate conversation history (0 = off) |
 
-## API Endpoints
+---
 
-| Endpoint | Description |
-|----------|-------------|
-| `POST /v1/chat/completions` | OpenAI-compatible chat completions |
-| `POST /v1/messages` | Anthropic Messages API (with tool calling translation for llama.cpp) |
-| `GET /v1/models` | List available profiles |
-| `POST /v1/load` | Pre-load a model without generating tokens |
-| `GET /v1/ps` | Show active backend processes |
-| `GET /health` | Health check |
-| `POST /v1/shutdown` | Graceful shutdown |
-
-### Anthropic Messages API (`/v1/messages`)
-
-The `/v1/messages` endpoint provides full Anthropic Messages API compatibility, including:
-
-- **Tool calling** — Tool definitions, `tool_use`, and `tool_result` blocks are translated between Anthropic and OpenAI formats for llama.cpp backends
-- **Streaming** — SSE events translated to Anthropic format (`message_start`, `content_block_start/delta/stop`, `message_delta`, `message_stop`)
-- **Thinking mode** — Enabled by default for non-Instruct models via the Qwen3.5 Jinja chat template
-- **Multimodal** — Supported when the base model includes an `mmproj` file
-
-This allows using llama.cpp models as drop-in replacements with tools like Claude Code.
-
-## Usage
-
-### Using with Claude Code
+## CLI
 
 ```bash
-# In Claude Code settings, point to Allma:
-ANTHROPIC_BASE_URL=http://127.0.0.1:9000
-ANTHROPIC_MODEL=Qwen3.5:27b-Claude-4.6
+# Server lifecycle
+allma serve              # start daemon in background
+allma serve -v           # start in foreground with live logs
+allma restart            # stop + start
+allma stop               # stop server and all backends
+
+# Status
+allma status             # is the server running?
+allma list               # show available profiles
+allma ps                 # show currently loaded models + GPU usage
+
+# Models
+allma run <profile>      # load model and open interactive chat
+allma unload <model>     # unload a model immediately (free VRAM)
+
+# Logs
+allma logs               # show recent allma logs
+allma logs -f            # follow allma logs live
+allma backend logs       # tail the running backend log
+
+# Integrations
+allma launch claude <profile>   # load model, launch Claude Code pointed at it
+
+# Setup tools
+allma wizard             # interactive TUI wizard to create configs
+allma hardware-detect    # show detected GPUs and VRAM
+allma download <hf-repo> # download a HuggingFace model and create configs
 ```
 
-### Using with OpenAI-compatible Clients
+---
+
+## API
+
+Allma exposes two compatible APIs on the same port.
+
+### OpenAI-compatible
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(
-    base_url="http://127.0.0.1:9000/v1",
-    api_key="dummy"
-)
-
+client = OpenAI(base_url="http://127.0.0.1:9000/v1", api_key="dummy")
 response = client.chat.completions.create(
-    model="Qwen3.5:27b-Instruct",
-    messages=[{"role": "user", "content": "Hello!"}]
+    model="MyModel:Instruct",   # profile name from configs/profile/
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True,
 )
+for chunk in response:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
+
+### Anthropic-compatible
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://127.0.0.1:9000",
+    api_key="dummy",
+)
+message = client.messages.create(
+    model="MyModel:Instruct",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(message.content[0].text)
+```
+
+### Admin endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Server health + loaded model count |
+| `GET /v1/models` | List available profiles |
+| `GET /v1/ps` | Active backend processes |
+| `POST /v1/load` | Pre-load a model: `{"model": "Profile:Name"}` |
+| `POST /v1/unload` | Unload a model: `{"model": "base-name"}` |
+| `POST /v1/shutdown` | Graceful shutdown |
+
+---
+
+## Integration with Claude Code
+
+The most common use case: run Claude Code against a local model.
+
+**Option 1 — `allma launch` (recommended)**
+
+```bash
+allma launch claude MyModel:Instruct
+```
+
+This loads the model, configures Claude Code to use it, and opens a Claude Code session. When you close the session, the model stays loaded until `KEEP_ALIVE_SECONDS` elapses.
+
+**Option 2 — Manual configuration**
+
+Point Claude Code to Allma permanently in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:9000",
+    "ANTHROPIC_AUTH_TOKEN": "dummy"
+  }
+}
+```
+
+Then set the default model:
+
+```bash
+export ANTHROPIC_DEFAULT_SONNET_MODEL="MyModel:Instruct"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="MyModel:Instruct"
+claude
+```
+
+> **Context window:** Claude Code sessions can exceed 100 K tokens. Make sure your model's `n_ctx` (llama.cpp) or `max_model_len` (vLLM) is set accordingly. For long sessions with GGUF models, consider a separate config without `mmproj` to save VRAM for the KV cache.
+
+---
+
+## Multi-GPU setup
+
+### Tensor parallelism (vLLM)
+
+For models too large for a single GPU, set `tensor_parallel` in the base config:
+
+```ini
+backend = "vllm"
+tensor_parallel = "2"   # split across 2 GPUs
+```
+
+Allma automatically selects consecutive GPUs (e.g. 0+1, 1+2) with enough free VRAM. If no consecutive pair fits, it reports a clear error.
+
+### Pinning to a specific GPU
+
+To pin a model to a specific GPU (e.g. GPU 1 while GPU 0 runs ComfyUI):
+
+```ini
+gpu_id = 1
+```
+
+This works for both vLLM and llama.cpp backends.
+
+### Hiding GPUs from Allma
+
+```ini
+# .env
+ALLMA_VISIBLE_DEVICES=1,2   # only use GPU 1 and 2
+```
+
+---
+
+## VRAM budget
+
+Allma estimates each model's VRAM requirement before loading and unloads other models if needed. The estimate includes:
+
+- Model weights (from file sizes)
+- KV cache (from model architecture — respects quantization, sliding window, hybrid architectures)
+- Fixed overhead (~0.25 GB for llama.cpp, ~1 GB for vLLM)
+
+For llama.cpp the KV cache size scales linearly with `n_ctx`. To reduce it, lower `n_ctx` or use KV quantization:
+
+```ini
+extra_args = ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"]
+```
+
+---
+
+## How configs auto-detect arguments
+
+If a base config has no `extra_args`, Allma reads the model's `config.json` (or GGUF metadata) to identify the model family (Qwen3, Gemma4, Llama, Phi, etc.) and applies appropriate defaults automatically. This means a minimal config like:
+
+```ini
+backend = "vllm"
+path = "/path/to/Models/Qwen3-8B"
+```
+
+…will still get the right `--reasoning-parser`, `--tool-call-parser`, and other settings applied automatically.
+
+---
+
+## Profiles: thinking mode
+
+Models that support chain-of-thought (e.g. Qwen3, DeepSeek-R1) can have thinking enabled or disabled per profile:
+
+```ini
+# configs/profile/MyModel-Reasoning.allm
+name = "MyModel:Reasoning"
+base = "MyModel"
+enable_thinking = true   # default for non-instruct profiles
+
+# configs/profile/MyModel-Instruct.allm
+name = "MyModel:Instruct"
+base = "MyModel"
+enable_thinking = false  # fast, no <think> blocks
+```
+
+Profiles with "instruct" in the name disable thinking automatically.
+
+---
+
+## Troubleshooting
+
+**Model won't load — VRAM error**
+```
+RuntimeError: Not enough VRAM: MyModel needs 22.1GB, only 18.3GB free
+```
+→ Another model is loaded. Run `allma ps` to see what's active, then `allma unload <model>`.
+
+**Port already in use**
+```
+[Errno 98] Address already in use
+```
+→ A previous backend process is still running. Run `allma stop` which will kill orphaned processes.
+
+**llama-server not found**
+→ Build llama.cpp (see [Backend Setup](#backend-setup)) or set `LLAMA_CPP_PATH` in `.env`.
+
+**vLLM not found**
+→ `venv/bin/pip install vllm` — or `pip install vllm` if using system Python.
+
+**Context window exceeded**
+```
+request (113158 tokens) exceeds context size (98304)
+```
+→ The conversation is too long for the model's configured context. Use `/compact` in Claude Code to summarize the session, or increase `n_ctx`/`max_model_len` (check VRAM budget first).
+
+**Claude Code loads the wrong model**
+→ Use `allma launch claude <profile>` instead of running `claude` directly — it pins the model for that session.
+
+---
+
+## Project structure
+
+```
+allma/
+├── allma.py            # server entry point (uvicorn + signal handlers)
+├── allma_cli.py        # CLI (allma serve / stop / run / launch / …)
+├── allma_tui.py        # full TUI (model library + wizard launcher)
+├── wizard.py           # interactive setup wizard (standalone + embedded in TUI)
+├── create_config.py    # config generator (used by wizard and download command)
+├── install.sh          # one-shot installer
+│
+├── core/
+│   ├── config.py       # constants, .env loading, model config loading
+│   ├── state.py        # shared runtime state
+│   ├── server.py       # FastAPI app and all route handlers
+│   ├── loader.py       # model loading, VRAM checks, readiness polling
+│   ├── process.py      # build backend commands, kill, shutdown
+│   ├── gpu.py          # VRAM detection, TP selection, VRAM estimation
+│   ├── health.py       # idle timeout + crash detection monitor
+│   ├── model_detect.py # auto-detect model family from config.json / GGUF
+│   ├── bootstrap.py    # hardware detection at startup
+│   ├── downloader.py   # HuggingFace model downloader
+│   └── error_detector.py  # parse backend stderr for actionable errors
+│
+├── configs/
+│   ├── base/           # *.allm (gitignored) + *.allm.example (committed)
+│   ├── profile/        # *.allm profile configs (committed, no paths)
+│   └── loader.py       # .allm file parser
+│
+├── docs/               # extended documentation
+├── scripts/            # benchmark and utility scripts
+└── tests/              # unit and integration tests
+```
+
+---
 
 ## License
 
-Personal use only.
+MIT

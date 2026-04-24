@@ -1,6 +1,6 @@
 backend = "llama.cpp"
-model = "/home/nick/AI/Models/Gemma-4-31B-GGUF/gemma-4-31B-it-UD-Q8_K_XL.gguf"
-mmproj = "/home/nick/AI/Models/Gemma-4-31B-GGUF/mmproj-BF16.gguf"
+model = "/path/to/Models/Gemma-4-31B-GGUF/gemma-4-31B-it-UD-Q8_K_XL.gguf"
+mmproj = "/path/to/Models/Gemma-4-31B-GGUF/mmproj-BF16.gguf"
 
 n_ctx = 65536
 n_batch = "4096"

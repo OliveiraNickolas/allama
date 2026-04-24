@@ -31,15 +31,15 @@ def health_monitor():
                                 error_analysis = ErrorDetector.analyze_log(last_lines)
                                 if error_analysis:
                                     logger.error(
-                                        f"💥 {base_name}:{port} crashed\n"
-                                        f"   Razão: {error_analysis.error_type}\n"
+                                        f"{base_name}:{port} crashed\n"
+                                        f"   Reason: {error_analysis.error_type}\n"
                                         f"   {error_analysis.explanation}"
                                     )
                                     state.last_error_analysis[base_name] = error_analysis
                                 else:
-                                    logger.error(f"💥 {base_name}:{port} crashed (causa desconhecida)")
+                                    logger.error(f"{base_name}:{port} crashed (unknown cause)")
                             else:
-                                logger.error(f"💥 {base_name}:{port} crashed")
+                                logger.error(f"{base_name}:{port} crashed")
 
                             state.active_servers.pop(base_name, None)
                             state.server_idle_time.pop(base_name, None)

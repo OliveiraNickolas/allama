@@ -114,7 +114,7 @@ def get_all_gpus() -> list[dict]:
     if visible_devices:
         try:
             visible_gpus = set(int(x.strip()) for x in visible_devices.split(","))
-            logger.debug(f"🔒 ALLMA_VISIBLE_DEVICES={visible_devices}, restricting to GPUs: {visible_gpus}")
+            logger.debug(f"ALLMA_VISIBLE_DEVICES={visible_devices}, restricting to GPUs: {visible_gpus}")
         except ValueError as e:
             logger.error(f"Invalid ALLMA_VISIBLE_DEVICES: {visible_devices}. Must be comma-separated integers. {e}")
             visible_gpus = None
@@ -144,7 +144,7 @@ def get_all_gpus() -> list[dict]:
                         "total_gb": total_mb / 1024,
                     })
         if visible_gpus is not None:
-            logger.info(f"🔍 Found {len(gpus)} GPU(s) visible to ALLMA: {[g['index'] for g in gpus]}")
+            logger.info(f"Found {len(gpus)} GPU(s) visible to ALLMA: {[g['index'] for g in gpus]}")
         return gpus
     except Exception as e:
         logger.error(f"Error getting GPU info: {e}")
@@ -249,7 +249,7 @@ def find_optimal_tp_and_gpus(base_name: str, skip_gpu: int | None = None) -> tup
 
     if effective_tp > requested_tp:
         logger.info(
-            f"🔼 {base_name}: Auto-upgrading TP {requested_tp}→{effective_tp} "
+            f"{base_name}: Auto-upgrading TP {requested_tp}→{effective_tp} "
             f"(model needs {required_gb:.1f}GB, single GPU has {usable_per_gpu_gb:.1f}GB usable)"
         )
 
@@ -271,7 +271,7 @@ def find_optimal_tp_and_gpus(base_name: str, skip_gpu: int | None = None) -> tup
                 continue
             return effective_tp, indices[0]
 
-    logger.warning(f"⚠️ {base_name}: No consecutive GPU group found for TP={effective_tp}, using GPU 0")
+    logger.warning(f"{base_name}: No consecutive GPU group found for TP={effective_tp}, using GPU 0")
     best = all_gpus[0] if all_gpus else {"index": 0}
     return effective_tp, best["index"]
 
@@ -291,21 +291,29 @@ def get_model_vram_need(cfg: Dict[str, Any], base_name: str) -> float:
             model_file = cfg.get("model", "")
             if not model_file or not os.path.isfile(model_file):
                 return 4.0
-            size_gb = os.path.getsize(model_file) / (1024 ** 3)
+            size_gb   = os.path.getsize(model_file) / (1024 ** 3)
             mmproj_file = cfg.get("mmproj", "")
             mmproj_gb = os.path.getsize(mmproj_file) / (1024 ** 3) if mmproj_file and os.path.isfile(mmproj_file) else 0.0
-            n_ctx = int(cfg.get("n_ctx", "40960"))
-            # Estimate KV cache from model config.json (same logic as vLLM path)
+            n_ctx     = int(cfg.get("n_ctx", "40960"))
             model_dir = str(Path(model_file).parent)
-            kv_dtype = "q8_0" if "--cache-type-k" in cfg.get("extra_args", []) else "auto"
-            # q8_0 = 1 byte per element, fp16 = 2 bytes
-            kv_dtype_bytes = 1 if kv_dtype == "q8_0" else 2
+
+            # Read actual --cache-type-k value from extra_args (not just presence)
+            extra_args = cfg.get("extra_args", [])
+            kv_dtype = "auto"
+            if "--cache-type-k" in extra_args:
+                idx = extra_args.index("--cache-type-k")
+                kv_dtype = extra_args[idx + 1] if idx + 1 < len(extra_args) else "q8_0"
+
             kv_cache_gb = _estimate_kv_cache_gb(model_dir, n_ctx, kv_dtype)
-            # If config.json not found in GGUF dir, fall back to a conservative formula
+            # If config.json not found in GGUF dir, fall back using real bytes/element
+            # q4_0/q4_1 = 0.5 B/elem; q5_x = 0.625; q8_0/fp8 = 1.0; fp16 = 2.0
             if kv_cache_gb == n_ctx * 65536 / (1024 ** 3):
-                # fallback path was hit — use safer per-token estimate
-                kv_cache_gb = (n_ctx * 2 * 32 * 128 * kv_dtype_bytes) / (1024 ** 3)
-            return size_gb * 1.06 + mmproj_gb + kv_cache_gb + 0.5
+                _dtype_bytes = {"q4_0": 0.5, "q4_1": 0.5, "q5_0": 0.625, "q5_1": 0.625,
+                                "q8_0": 1.0, "fp8": 1.0}.get(kv_dtype, 2.0)
+                kv_cache_gb = (n_ctx * 2 * 32 * 128 * _dtype_bytes) / (1024 ** 3)
+
+            # GGUF loads exactly its quantized size — only 1% overhead + 0.25 GB fixed
+            return size_gb * 1.01 + mmproj_gb + kv_cache_gb + 0.25
     except Exception as e:
         logger.error(f"Error estimating VRAM for {base_name}: {e}")
     return 4.0

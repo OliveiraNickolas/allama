@@ -25,6 +25,10 @@ _health_monitor_running = threading.Event()
 # HTTP client (managed by server.py)
 httpx_client = None
 
+# Default profile to use when an unknown model name is requested (e.g. "claude-sonnet-4-5").
+# Set by /v1/load so that `allma launch` pins a specific profile for the session.
+default_profile: Optional[str] = None
+
 # Error detection & auto-resolution
 last_error_analysis: Dict[str, Any] = {}  # {base_name: ErrorAnalysis}
 auto_fix_attempt_count: Dict[str, int] = {}  # {base_name: attempt_count}
