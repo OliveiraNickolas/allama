@@ -269,6 +269,104 @@ allma download <hf-repo> # download a HuggingFace model and create configs
 
 ---
 
+## Downloading Models
+
+Allma has a built-in HuggingFace downloader that handles model selection, download progress, and automatic config generation — all in one command.
+
+```bash
+allma download <hf-repo-or-url>
+```
+
+**Examples:**
+
+```bash
+# Paste a HuggingFace URL directly
+allma download https://huggingface.co/bartowski/Qwen3-8B-GGUF
+
+# Or use the repo ID shorthand
+allma download Qwen/Qwen3-8B
+
+# Works with any model type: GGUF, safetensors, FP8, BF16
+allma download Qwen/Qwen3-8B-FP8
+```
+
+### What happens
+
+**For GGUF repos** — an interactive file picker lists every `.gguf` variant sorted by quantization quality (BF16 → Q8 → Q6 → Q4 → …), with file sizes shown. Pick one or several:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║ ┌──────────────────────────────────────────────────────────┐ ║
+║ │ [ Download ]                                             │ ║
+║ │   repo      ▸  bartowski/Qwen3-8B-GGUF                  │ ║
+║ │   dest      ▸  /home/nick/AI/Models/Qwen3-8B-GGUF       │ ║
+║ └──────────────────────────────────────────────────────────┘ ║
+╚══════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════╗
+║ ┌──────────────────────────────────────────────────────────┐ ║
+║ │ [ Files ]                                                │ ║
+║ │  #   File                                     Size       │ ║
+║ │  1   Qwen3-8B-BF16.gguf                       15.7 GB    │ ║
+║ │  2   Qwen3-8B-Q8_0.gguf                        8.6 GB    │ ║
+║ │  3   Qwen3-8B-Q6_K_L.gguf                      6.6 GB    │ ║
+║ │  4   Qwen3-8B-Q4_K_M.gguf                      5.0 GB    │ ║
+║ │  5   Qwen3-8B-Q4_K_S.gguf                      4.7 GB    │ ║
+║ │  6   Qwen3-8B-IQ4_XS.gguf                      4.5 GB    │ ║
+║ │                                                          │ ║
+║ │  Enter numbers to download  1  or  1 3  or  1,3         │ ║
+║ │  · Enter to cancel                                       │ ║
+║ └──────────────────────────────────────────────────────────┘ ║
+╚══════════════════════════════════════════════════════════════╝
+
+  ▸ 4
+```
+
+**For safetensors repos** — shows total size and asks for confirmation before downloading the full repo (config files, tokenizer, weights). Skips `.bin`, `.pt`, and other formats automatically.
+
+**After download** — Allma reads the model's `config.json` (or GGUF metadata) to detect the model family and auto-generates ready-to-use configs:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║ ┌──────────────────────────────────────────────────────────┐ ║
+║ │ [ Ready ]                                                │ ║
+║ │   base      ▸  configs/base/Qwen3-8B-GGUF.allm          │ ║
+║ │   profile   ▸  configs/profile/Qwen3-8B-GGUF-Instruct   │ ║
+║ │   profile   ▸  configs/profile/Qwen3-8B-GGUF-Reasoning  │ ║
+║ │                                                          │ ║
+║ │   allma run Qwen3-8B-GGUF-Instruct                       │ ║
+║ └──────────────────────────────────────────────────────────┘ ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+Run the suggested command and the model is ready to use.
+
+### Requirements
+
+`huggingface_hub` is included in Allma's dependencies and installed automatically. For gated models (Llama, Gemma, etc.), authenticate first:
+
+```bash
+venv/bin/pip install huggingface_hub   # already in requirements.txt
+huggingface-cli login                  # paste your HF token
+```
+
+Or set the env var:
+
+```bash
+export HUGGING_FACE_HUB_TOKEN=hf_...
+```
+
+### Models directory
+
+By default models are downloaded to `~/AI/Models/<repo-name>`. Override with:
+
+```ini
+# .env
+ALLMA_MODELS_DIR=/data/models
+```
+
+---
+
 ## API
 
 Allma exposes two compatible APIs on the same port.
