@@ -1432,6 +1432,150 @@ def cmd_wizard(_args):
     WizardApp().run()
 
 
+def cmd_update(args):
+    """Update allma, vLLM, and/or llama.cpp to their latest versions."""
+    target = args.target  # "all" | "allma" | "vllm" | "llama"
+
+    def _banner(title):
+        print(f"\n  ── {title} {'─' * max(0, 44 - len(title))}")
+
+    def _run(label, cmd, cwd=None, env=None):
+        """Run a command, stream output, return success."""
+        import subprocess as _sp
+        print(f"  $ {' '.join(cmd)}")
+        result = _sp.run(cmd, cwd=cwd, env=env)
+        if result.returncode != 0:
+            print(f"  ✗ {label} failed (exit {result.returncode})")
+            return False
+        print(f"  ✓ {label}")
+        return True
+
+    def _ver(cmd):
+        """Return first line of a command's output, or ''."""
+        import subprocess as _sp
+        try:
+            return _sp.check_output(cmd, stderr=_sp.DEVNULL, text=True).strip().split("\n")[0]
+        except Exception:
+            return ""
+
+    updated_anything = False
+
+    # ── allma (git pull) ────────────────────────────────────────────────────────
+    if target in ("all", "allma"):
+        _banner("Allma")
+        git_dir = ALLMA_DIR / ".git"
+        if not git_dir.exists():
+            print("  Not a git repository — skipping allma update")
+        else:
+            before = _ver(["git", "-C", str(ALLMA_DIR), "rev-parse", "--short", "HEAD"])
+            ok = _run("git pull", ["git", "-C", str(ALLMA_DIR), "pull", "--ff-only"])
+            if ok:
+                after = _ver(["git", "-C", str(ALLMA_DIR), "rev-parse", "--short", "HEAD"])
+                if before != after:
+                    print(f"  {before} → {after}")
+                    updated_anything = True
+                    # Reinstall Python deps in case requirements changed
+                    req = ALLMA_DIR / "requirements.txt"
+                    if req.exists():
+                        _run("pip install -r requirements.txt", [PYTHON, "-m", "pip", "install", "-q", "-r", str(req)])
+                else:
+                    print("  Already up to date.")
+
+    # ── vLLM ────────────────────────────────────────────────────────────────────
+    if target in ("all", "vllm"):
+        _banner("vLLM")
+        before = _ver([PYTHON, "-c", "import vllm; print(vllm.__version__)"])
+        if not before:
+            print("  vLLM not installed. Install it with:")
+            print(f"  {PYTHON} -m pip install vllm")
+        else:
+            print(f"  Current: {before}")
+            ok = _run("pip upgrade vllm", [PYTHON, "-m", "pip", "install", "-q", "--upgrade", "vllm"])
+            if ok:
+                after = _ver([PYTHON, "-c", "import vllm; print(vllm.__version__)"])
+                if before != after:
+                    print(f"  {before} → {after}")
+                    updated_anything = True
+                else:
+                    print("  Already up to date.")
+
+    # ── llama.cpp ────────────────────────────────────────────────────────────────
+    if target in ("all", "llama"):
+        _banner("llama.cpp")
+        from core.config import LLAMA_CPP_PATH, LLAMA_CPP_PYTHON_BACKEND
+
+        if LLAMA_CPP_PYTHON_BACKEND:
+            # pip-based install
+            before = _ver([PYTHON, "-c", "import llama_cpp; print(llama_cpp.__version__)"])
+            print(f"  Current: llama-cpp-python {before}")
+            # Detect CUDA version for the right wheel index
+            import subprocess as _sp2
+            cuda_ver = ""
+            try:
+                smi = _sp2.check_output(["nvidia-smi"], text=True)
+                import re as _re2
+                m = _re2.search(r"CUDA Version: (\d+)", smi)
+                if m:
+                    cuda_ver = m.group(1)
+            except Exception:
+                pass
+            pip_cmd = [PYTHON, "-m", "pip", "install", "--upgrade", "llama-cpp-python[server]"]
+            if cuda_ver:
+                pip_cmd += ["--extra-index-url", f"https://abetlen.github.io/llama-cpp-python/whl/cu{cuda_ver}"]
+            ok = _run("pip upgrade llama-cpp-python", pip_cmd)
+            if ok:
+                after = _ver([PYTHON, "-c", "import llama_cpp; print(llama_cpp.__version__)"])
+                if before != after:
+                    print(f"  {before} → {after}")
+                    updated_anything = True
+                else:
+                    print("  Already up to date.")
+        else:
+            # Native binary — rebuild from source if the build dir exists
+            build_dir = Path.home() / ".local" / "share" / "llama.cpp"
+            if not (build_dir / ".git").exists():
+                # Try common manual build locations
+                for d in [Path.home() / "llama.cpp", Path.home() / "AI" / "llama.cpp"]:
+                    if (d / ".git").exists():
+                        build_dir = d
+                        break
+                else:
+                    print(f"  llama-server found at: {LLAMA_CPP_PATH}")
+                    print("  Source directory not found — cannot auto-update.")
+                    print("  To update, re-run:  bash scripts/install-llama-cpp.sh")
+                    build_dir = None
+
+            if build_dir:
+                before = _ver([LLAMA_CPP_PATH, "--version"])
+                print(f"  Current: {before or LLAMA_CPP_PATH}")
+                ok = _run("git pull", ["git", "-C", str(build_dir), "pull", "--ff-only"])
+                if ok:
+                    import multiprocessing as _mp
+                    jobs = str(_mp.cpu_count() or 4)
+                    ok2 = _run("cmake build", ["cmake", "--build", str(build_dir / "build"),
+                                               "--config", "Release", "-j", jobs, "--target", "llama-server"])
+                    if ok2:
+                        # Copy updated binary
+                        built = build_dir / "build" / "bin" / "llama-server"
+                        if built.exists():
+                            import shutil as _sh
+                            _sh.copy2(str(built), LLAMA_CPP_PATH)
+                        after = _ver([LLAMA_CPP_PATH, "--version"])
+                        if before != after:
+                            print(f"  {before} → {after}")
+                            updated_anything = True
+                        else:
+                            print("  Already up to date.")
+
+    print()
+    if updated_anything:
+        print("  Update complete. Restart allma to apply changes:")
+        print("  allma restart")
+    else:
+        print("  Everything is already up to date.")
+    print()
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
     # Internal: running as watchdog daemon
@@ -1557,6 +1701,17 @@ def main():
     # wizard
     p_wz = sub.add_parser("wizard", help="Interactive wizard to create model configs")
     p_wz.set_defaults(func=cmd_wizard)
+
+    # update
+    p_up = sub.add_parser("update", help="Update allma and/or backends to latest versions")
+    p_up.add_argument(
+        "target",
+        nargs="?",
+        default="all",
+        choices=["all", "allma", "vllm", "llama"],
+        help="What to update: all (default), allma, vllm, llama",
+    )
+    p_up.set_defaults(func=cmd_update)
 
     args = parser.parse_args()
     args.func(args)
