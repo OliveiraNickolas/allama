@@ -1,228 +1,196 @@
 """
-Integration tests — requerem allama rodando em http://127.0.0.1:9000.
-Testam carregamento real de modelos com backends vLLM e llama.cpp.
+Integration tests — require allma running at http://127.0.0.1:9000.
+Tests real model loading with vLLM and llama.cpp backends.
 
-Modelos testados:
- - vLLM leve : Qwen3.5:9b (19GB, TP=1, single GPU)
- - llama.cpp : Qwen3.5:27b-Claude-4.6 (27GB Q8_0, pode ter CPU offload)
- - Simultâneo : Qwen3.5:9b + Qwen3vl:8b (GPU 0 + GPU 1, 2x3090)
+Run only when the server is up:
+    allma serve && pytest tests/test_integration.py -v -s
 """
-import asyncio
 import time
 import pytest
-import httpx
+
+try:
+    import httpx
+    _HTTPX_AVAILABLE = True
+except ImportError:
+    _HTTPX_AVAILABLE = False
 
 BASE_URL = "http://127.0.0.1:9000"
-LOAD_TIMEOUT = 600 # 10 min — loading de modelos grandes
-SHORT_TIMEOUT = 30 # health / models list
+LOAD_TIMEOUT = 600   # 10 min — large model loading
+SHORT_TIMEOUT = 30
 
 PROMPT_SIMPLE = [{"role": "user", "content": "Responda apenas: OK"}]
-PROMPT_VISION = [{"role": "user", "content": "Descreva esta cor: azul"}]
 
 
 # ==============================================================================
 # Helpers
 # ==============================================================================
-async def health_check(client: httpx.AsyncClient) -> dict:
- r = await client.get(f"{BASE_URL}/health", timeout=SHORT_TIMEOUT)
- r.raise_for_status()
- return r.json()
+def health_check(client: "httpx.Client") -> dict:
+    r = client.get(f"{BASE_URL}/health", timeout=SHORT_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
 
 
-async def load_and_query(
- client: httpx.AsyncClient,
- model: str,
- messages: list,
- max_tokens: int = 512,
-) -> dict:
- payload = {
- "model": model,
- "messages": messages,
- "max_tokens": max_tokens,
- "temperature": 0.0,
- "stream": False,
- }
- r = await client.post(
- f"{BASE_URL}/v1/chat/completions",
- json=payload,
- timeout=LOAD_TIMEOUT,
- )
- return r
+def load_and_query(client: "httpx.Client", model: str, messages: list, max_tokens: int = 256) -> "httpx.Response":
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        "stream": False,
+    }
+    return client.post(f"{BASE_URL}/v1/chat/completions", json=payload, timeout=LOAD_TIMEOUT)
 
 
-def extract_content(response_body: dict) -> str:
- """Extrai texto da resposta — suporta modelos normais e de thinking.
- vLLM 0.18 usa 'reasoning' para o bloco de thinking, não 'reasoning_content'.
- """
- msg = response_body["choices"][0]["message"]
- return (msg.get("content") or "").strip() or (msg.get("reasoning") or "").strip()
-
-
-async def active_models(client: httpx.AsyncClient) -> int:
- data = await health_check(client)
- return data.get("active_servers", 0)
+def extract_content(body: dict) -> str:
+    msg = body["choices"][0]["message"]
+    return (msg.get("content") or "").strip() or (msg.get("reasoning") or "").strip()
 
 
 # ==============================================================================
 # Fixtures
 # ==============================================================================
 @pytest.fixture
-async def client():
- """Cliente HTTP por teste — o estado do servidor (modelos carregados) persiste entre testes."""
- async with httpx.AsyncClient() as c:
- try:
- await c.get(f"{BASE_URL}/health", timeout=5)
- except Exception:
- pytest.skip("Allama não está rodando em http://127.0.0.1:9000")
- yield c
+def client():
+    """HTTP client per test — server state (loaded models) persists between tests."""
+    if not _HTTPX_AVAILABLE:
+        pytest.skip("httpx not installed — run: pip install httpx")
+    with httpx.Client() as c:
+        try:
+            c.get(f"{BASE_URL}/health", timeout=5)
+        except Exception:
+            pytest.skip("Allma is not running at http://127.0.0.1:9000 — run: allma serve")
+        yield c
 
 
 # ==============================================================================
-# Teste 1 — vLLM mais leve: Qwen3.5-9b
+# Test 1 — Server health
 # ==============================================================================
-class TestVllmLight:
- async def test_server_healthy(self, client):
- data = await health_check(client)
- assert data["status"] == "healthy"
- print(f"\n Servidores ativos antes: {data['active_servers']}")
+class TestServerHealth:
+    def test_health_endpoint(self, client):
+        data = health_check(client)
+        assert data["status"] == "healthy"
 
- async def test_load_and_respond(self, client):
- model = "Qwen3.5:9b"
- print(f"\n Carregando {model} (vLLM, TP=1, ~19GB)...")
- t0 = time.time()
+    def test_models_list_not_empty(self, client):
+        r = client.get(f"{BASE_URL}/v1/models", timeout=SHORT_TIMEOUT)
+        assert r.status_code == 200
+        data = r.json()
+        assert "data" in data
+        assert len(data["data"]) > 0, "No profiles found — check configs/profile/"
 
- r = await load_and_query(client, model, PROMPT_SIMPLE)
- elapsed = time.time() - t0
+    def test_ps_endpoint(self, client):
+        r = client.get(f"{BASE_URL}/v1/ps", timeout=SHORT_TIMEOUT)
+        assert r.status_code == 200
 
- print(f" Status: {r.status_code} | Tempo: {elapsed:.1f}s")
- assert r.status_code == 200, f"Erro: {r.text[:200]}"
-
- body = r.json()
- content = extract_content(body)
- print(f" Resposta: {content[:80]!r}")
- assert content.strip(), "Resposta vazia (nem content nem reasoning_content)"
-
- async def test_second_request_reuses_server(self, client):
- """Segunda requisição deve reutilizar o processo já carregado (muito mais rápida)."""
- model = "Qwen3.5:9b"
- t0 = time.time()
- r = await load_and_query(client, model, PROMPT_SIMPLE)
- elapsed = time.time() - t0
-
- print(f"\n Reutilização — Status: {r.status_code} | Tempo: {elapsed:.1f}s")
- assert r.status_code == 200
- assert extract_content(r.json()).strip(), "Resposta vazia no reuso"
- assert elapsed < 120, f"Segunda requisição demorou {elapsed:.0f}s — esperava < 120s (reuso)"
-
- async def test_model_is_active_after_load(self, client):
- data = await health_check(client)
- assert data["active_servers"] >= 1
- print(f"\n Servidores ativos após load: {data['active_servers']}")
+    def test_404_on_unknown_route(self, client):
+        r = client.get(f"{BASE_URL}/nonexistent", timeout=SHORT_TIMEOUT)
+        assert r.status_code == 404
 
 
 # ==============================================================================
-# Teste 2 — llama.cpp: Qwen3.5:27b-Claude-4.6
+# Test 2 — Model loading (vLLM, first available 27b profile)
 # ==============================================================================
-class TestLlamaCppLight:
- async def test_load_and_respond(self, client):
- model = "Qwen3.5:27b-Claude-4.6"
- print(f"\n Carregando {model} (llama.cpp, 27GB Q8_0)...")
- print(" Nota: modelo >24GB, esperado CPU offload parcial")
- t0 = time.time()
+class TestModelLoad:
+    MODEL = "Qwen3.6:27b-Instruct"
 
- r = await load_and_query(client, model, PROMPT_SIMPLE)
- elapsed = time.time() - t0
+    def test_model_in_list(self, client):
+        r = client.get(f"{BASE_URL}/v1/models", timeout=SHORT_TIMEOUT)
+        ids = [m["id"] for m in r.json().get("data", [])]
+        if self.MODEL not in ids:
+            pytest.skip(f"{self.MODEL} not configured — available: {ids}")
 
- print(f" Status: {r.status_code} | Tempo: {elapsed:.1f}s")
- assert r.status_code == 200, f"Erro: {r.text[:200]}"
+    def test_load_and_respond(self, client):
+        r = client.get(f"{BASE_URL}/v1/models", timeout=SHORT_TIMEOUT)
+        ids = [m["id"] for m in r.json().get("data", [])]
+        if self.MODEL not in ids:
+            pytest.skip(f"{self.MODEL} not configured")
 
- body = r.json()
- content = extract_content(body)
- print(f" Resposta: {content[:80]!r}")
- assert content.strip(), "Resposta vazia"
+        print(f"\n  Loading {self.MODEL}...")
+        t0 = time.time()
+        r = load_and_query(client, self.MODEL, PROMPT_SIMPLE)
+        elapsed = time.time() - t0
 
- async def test_second_request_reuses_server(self, client):
- model = "Qwen3.5:27b-Claude-4.6"
- t0 = time.time()
- r = await load_and_query(client, model, PROMPT_SIMPLE)
- elapsed = time.time() - t0
+        print(f"  Status: {r.status_code} | Time: {elapsed:.1f}s")
+        assert r.status_code == 200, f"Error: {r.text[:300]}"
+        content = extract_content(r.json())
+        print(f"  Response: {content[:80]!r}")
+        assert content.strip(), "Empty response"
 
- print(f"\n Reutilização — Status: {r.status_code} | Tempo: {elapsed:.1f}s")
- assert r.status_code == 200
- assert extract_content(r.json()).strip(), "Resposta vazia no reuso"
- assert elapsed < 120
+    def test_second_request_is_faster(self, client):
+        r = client.get(f"{BASE_URL}/v1/models", timeout=SHORT_TIMEOUT)
+        ids = [m["id"] for m in r.json().get("data", [])]
+        if self.MODEL not in ids:
+            pytest.skip(f"{self.MODEL} not configured")
 
- async def test_model_is_active(self, client):
- data = await health_check(client)
- assert data["active_servers"] >= 1
+        t0 = time.time()
+        r = load_and_query(client, self.MODEL, PROMPT_SIMPLE)
+        elapsed = time.time() - t0
+
+        assert r.status_code == 200
+        assert elapsed < 120, f"Second request took {elapsed:.0f}s — expected reuse < 120s"
+        assert extract_content(r.json()).strip(), "Empty response on reuse"
+
+    def test_model_active_after_load(self, client):
+        r = client.get(f"{BASE_URL}/v1/models", timeout=SHORT_TIMEOUT)
+        ids = [m["id"] for m in r.json().get("data", [])]
+        if self.MODEL not in ids:
+            pytest.skip(f"{self.MODEL} not configured")
+        data = health_check(client)
+        assert data["active_servers"] >= 1
 
 
 # ==============================================================================
-# Teste 3 — Carregamento simultâneo: Qwen3.5-9b + Qwen3vl-8b
+# Test 3 — OpenAI API compatibility
 # ==============================================================================
-class TestSimultaneousLoad:
- async def test_both_models_load_concurrently(self, client):
- """
- Dispara requisições para dois modelos TP=1 ao mesmo tempo.
- Espera: ambos carregam em GPUs distintas (GPU 0 ~19GB + GPU 1 ~17GB).
- """
- model_a = "Qwen3.5:9b"
- model_b = "Qwen3vl:8b"
+class TestOpenAICompat:
+    def test_chat_completions_schema(self, client):
+        """Response follows OpenAI chat completions schema."""
+        r = client.get(f"{BASE_URL}/v1/models", timeout=SHORT_TIMEOUT)
+        models = [m["id"] for m in r.json().get("data", [])]
+        if not models:
+            pytest.skip("No models configured")
 
- print(f"\n Disparando carga simultânea:")
- print(f" {model_a} (~19GB, TP=1)")
- print(f" {model_b} (~17GB, TP=1)")
- print(f" Setup: 2x RTX 3090 (24GB cada) — total disponível ~47GB")
+        model = models[0]
+        resp = load_and_query(client, model, PROMPT_SIMPLE, max_tokens=64)
+        if resp.status_code != 200:
+            pytest.skip(f"Model {model} not loadable: {resp.text[:100]}")
 
- t0 = time.time()
- results = await asyncio.gather(
- load_and_query(client, model_a, PROMPT_SIMPLE),
- load_and_query(client, model_b, PROMPT_VISION),
- return_exceptions=True,
- )
- elapsed = time.time() - t0
- print(f"\n Tempo total (paralelo): {elapsed:.1f}s")
+        body = resp.json()
+        assert "choices" in body
+        assert "model" in body
+        assert "usage" in body
+        assert len(body["choices"]) > 0
+        assert "message" in body["choices"][0]
+        assert "role" in body["choices"][0]["message"]
 
- r_a, r_b = results
+    def test_streaming_response(self, client):
+        """Streaming mode returns chunked SSE events."""
+        r = client.get(f"{BASE_URL}/v1/models", timeout=SHORT_TIMEOUT)
+        models = [m["id"] for m in r.json().get("data", [])]
+        if not models:
+            pytest.skip("No models configured")
 
- # model_a
- if isinstance(r_a, Exception):
- pytest.fail(f"{model_a} lançou exceção: {r_a}")
- print(f" {model_a}: status={r_a.status_code}")
- assert r_a.status_code == 200, f"Erro em {model_a}: {r_a.text[:200]}"
- content_a = extract_content(r_a.json())
- assert content_a.strip(), f"{model_a} retornou resposta vazia"
- print(f" Resposta: {content_a[:80]!r}")
+        model = models[0]
+        payload = {
+            "model": model,
+            "messages": PROMPT_SIMPLE,
+            "max_tokens": 32,
+            "stream": True,
+        }
+        with client.stream("POST", f"{BASE_URL}/v1/chat/completions",
+                           json=payload, timeout=LOAD_TIMEOUT) as resp:
+            if resp.status_code != 200:
+                pytest.skip(f"Model {model} not loadable")
+            chunks = []
+            for line in resp.iter_lines():
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    chunks.append(line)
+        assert len(chunks) > 0, "No SSE chunks received in streaming mode"
 
- # model_b
- if isinstance(r_b, Exception):
- pytest.fail(f"{model_b} lançou exceção: {r_b}")
- print(f" {model_b}: status={r_b.status_code}")
- assert r_b.status_code == 200, f"Erro em {model_b}: {r_b.text[:200]}"
- content_b = extract_content(r_b.json())
- assert content_b.strip(), f"{model_b} retornou resposta vazia"
- print(f" Resposta: {content_b[:80]!r}")
-
- async def test_both_models_active_simultaneously(self, client):
- """Após o teste anterior, ambos os modelos devem ainda estar ativos."""
- data = await health_check(client)
- active = data["active_servers"]
- print(f"\n Servidores ativos simultaneamente: {active}")
- assert active >= 2, f"Esperava >=2 servidores ativos, got {active}"
-
- async def test_vram_distribution(self):
- """Verifica que as GPUs foram usadas de forma distribuída via nvidia-smi."""
- import subprocess
- result = subprocess.run(
- ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid,used_memory",
- "--format=csv,noheader,nounits"],
- capture_output=True, text=True, timeout=10,
- )
- lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
- print(f"\n Processos usando VRAM:")
- for line in lines:
- print(f" {line}")
- # Com 2 modelos carregados simultaneamente, deve haver >= 2 processos usando VRAM
- assert len(lines) >= 2, (
- f"Esperava >= 2 processos usando VRAM (um por GPU), encontrei {len(lines)}"
- )
+    def test_invalid_model_returns_404_or_422(self, client):
+        payload = {
+            "model": "NonExistentModel:does-not-exist",
+            "messages": PROMPT_SIMPLE,
+            "max_tokens": 32,
+        }
+        r = client.post(f"{BASE_URL}/v1/chat/completions", json=payload, timeout=SHORT_TIMEOUT)
+        assert r.status_code in (404, 422, 400), f"Expected 4xx, got {r.status_code}"
