@@ -1263,6 +1263,84 @@ def cmd_launch(args):
     os.execvpe("claude", ["claude"] + args.claude_args, env)
 
 
+def cmd_launch_hermes(args):
+    """Start allma, load a model, and open hermes-agent pointed at it."""
+    from shutil import which as _which
+    model = args.model
+
+    hermes_bin = _which("hermes")
+    if not hermes_bin:
+        print("hermes not found in PATH. Install it first:")
+        print("  pip install hermes-agent   # or follow https://github.com/NousResearch/hermes-agent")
+        sys.exit(1)
+
+    stop_spinner = threading.Event()
+    phase_ref = ["start"]
+    spinner = threading.Thread(
+        target=_run_llama_spinner, args=(stop_spinner, phase_ref), daemon=True
+    )
+    spinner.start()
+
+    # 1 ─ Ensure allma is running
+    if not _is_running():
+        _start_daemon()
+        if not _wait_for_server(45):
+            stop_spinner.set()
+            spinner.join()
+            print("Allma failed to start. Check logs: allma logs")
+            sys.exit(1)
+
+    # 2 ─ Validate model exists
+    data = _get("/v1/models")
+    available = [m["id"] for m in (data or {}).get("data", [])]
+    if model not in available:
+        stop_spinner.set()
+        spinner.join()
+        print(f"Model '{model}' not found.")
+        if available:
+            print("Available models:")
+            for m in sorted(available):
+                print(f"  · {m}")
+        sys.exit(1)
+
+    # 3 ─ Pre-load model
+    phase_ref[0] = "model"
+    load_error = None
+    try:
+        payload = {"model": model}
+        if args.gpu is not None:
+            payload["gpu_id"] = args.gpu
+        result = _post("/v1/load", payload, timeout=300.0)
+    except KeyboardInterrupt:
+        stop_spinner.set()
+        spinner.join()
+        print("\nCancelled.")
+        sys.exit(0)
+    except RuntimeError as e:
+        load_error = str(e)
+        result = None
+
+    stop_spinner.set()
+    spinner.join()
+
+    if load_error:
+        print(f"Failed to load model '{model}': {load_error}")
+        print("Check logs: allma backend logs")
+        sys.exit(1)
+
+    if not result or result.get("status") != "loaded":
+        print(f"Failed to load model '{model}': unexpected server response.")
+        print("Check logs: allma backend logs")
+        sys.exit(1)
+
+    import random as _random
+    print(f"  ▲  {_random.choice(_LLAMA_PHRASES_READY)}")
+
+    # 4 ─ Launch hermes with model flag (hermes config already points to allma)
+    hermes_cmd = [hermes_bin, "-m", model] + args.hermes_args
+    os.execvp(hermes_bin, hermes_cmd)
+
+
 def cmd_backend_logs(args):
     """Tail the log of the currently running backend process."""
     if not _is_running():
@@ -1590,6 +1668,7 @@ commands:
 
   clients:
     launch claude <profile>          open Claude Code pointed at a local model
+    launch hermes <profile>          open hermes-agent pointed at a local model
 
   setup:
     download <hf-repo>               download a model from HuggingFace
@@ -1683,6 +1762,14 @@ commands:
     p_lc.add_argument("claude_args", nargs=argparse.REMAINDER,
                       help="Extra arguments forwarded to claude")
     p_lc.set_defaults(func=cmd_launch)
+
+    p_lh = launch_sub.add_parser("hermes", help="Open hermes-agent with a local model")
+    p_lh.add_argument("model", help="Profile model name (e.g. 'Qwen3.6:27b-Hermes')")
+    p_lh.add_argument("--gpu", type=int, default=None, metavar="ID",
+                      help="Force model onto a specific GPU (0-indexed)")
+    p_lh.add_argument("hermes_args", nargs=argparse.REMAINDER,
+                      help="Extra arguments forwarded to hermes")
+    p_lh.set_defaults(func=cmd_launch_hermes)
 
     # hardware-detect
     p_hw = sub.add_parser("hardware-detect", help="Detect hardware and show info")
