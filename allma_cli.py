@@ -1568,7 +1568,10 @@ def main():
         epilog="""\
 commands:
   server:
-    serve [-v] [-bv] [-f]            start daemon  (-v: foreground  -bv: tail backend logs)
+    serve                            start daemon in background
+    serve -v                         run in foreground, printing logs to terminal
+    serve -bv                        open a terminal window tailing each backend log
+    serve -f                         kill whatever is on port 9000, then start
     restart                          stop + restart
     stop                             stop server and all backends
     status                           show if server is running
@@ -1580,8 +1583,10 @@ commands:
     unload <model>                   unload a model and free its VRAM
 
   logs:
-    logs [-f] [-n N]                 show allma logs  (-f: follow)
-    backend logs [name] [-f] [-n N]  tail a backend process log
+    logs                             show last 50 lines of allma log
+    logs -f                          follow allma log live
+    logs -n 200                      show last 200 lines
+    backend logs [name]              tail a backend process log (-f to follow)
 
   clients:
     launch claude <profile>          open Claude Code pointed at a local model
