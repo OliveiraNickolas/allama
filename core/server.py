@@ -630,6 +630,14 @@ async def models_list():
     }
 
 
+@app.get("/v1/models/{model_id:path}")
+async def model_retrieve(model_id: str):
+    if model_id in PROFILE_MODELS:
+        return {"id": model_id, "object": "model"}
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
+
+
 @app.get("/v1/hardware")
 async def get_hardware_info():
     """
