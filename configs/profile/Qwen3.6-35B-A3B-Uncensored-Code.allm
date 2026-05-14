@@ -1,5 +1,6 @@
 name = "Qwen3.6:35b-Uncensored-Code"
 base = "Qwen3.6-35B-A3B-Uncensored-GGUF_Q4"
+enable_thinking = false
 
 [sampling]
 temperature = 0.6
