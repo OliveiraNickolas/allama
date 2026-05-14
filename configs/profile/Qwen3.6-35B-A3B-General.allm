@@ -1,6 +1,5 @@
 name = "Qwen3.6:35b-General"
 base = "Qwen3.6-35B-A3B-FP8"
-enable_thinking = false
 # thinking ON, general — Qwen3.6 official
 
 [sampling]
