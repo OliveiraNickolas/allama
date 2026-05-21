@@ -199,7 +199,7 @@ cp configs/base/Qwen3.6-27B-FP8.allm.example configs/base/Qwen3.6-27B-FP8.allm
 # Edit the file and set the correct path
 
 # GGUF model
-cp configs/base/Qwen3.6-35B-A3B-Uncensored-GGUF_Q4.allm.example configs/base/MyGGUF.allm
+cp configs/base/MyModel-GGUF.allm.example configs/base/MyGGUF.allm
 # Edit the file and set the correct path
 ```
 

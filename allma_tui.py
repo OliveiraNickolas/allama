@@ -22,7 +22,7 @@ from textual.widgets import Button, DataTable, Static
 # ──────────────────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
 CONFIG_DIR = BASE_DIR / "configs"
-ALLMA_URL = "http://127.0.0.1:9000"
+ALLMA_URL = f"http://127.0.0.1:{os.environ.get('ALLMA_PORT', '9000')}"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Logo

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Allma Config Creator — gera arquivos .allm para modelos baixados.
+Allma Config Creator — generates .allm files for downloaded models.
 
-Uso:
+Usage:
     python create_config.py /path/to/model
-    python create_config.py /path/to/model --name MeuModelo
-    python create_config.py /path/to/model --yes   # aceita todos os defaults
+    python create_config.py /path/to/model --name MyModel
+    python create_config.py /path/to/model --yes   # accept all defaults
 """
 import argparse
 import json
@@ -17,7 +17,7 @@ from textwrap import dedent
 
 
 # ==============================================================================
-# Cores para terminal
+# Terminal colors
 # ==============================================================================
 C_RESET  = "\033[0m"
 C_BOLD   = "\033[1m"
@@ -38,13 +38,13 @@ def dim(s):     return f"{C_DIM}{s}{C_RESET}"
 
 
 # ==============================================================================
-# Presets por família de modelo
-# Fontes: HuggingFace model cards + docs oficiais dos backends
+# Presets by model family
+# Sources: HuggingFace model cards + official backend docs
 # ==============================================================================
 FAMILY_PRESETS = {
-    # ── Qwen3.5 (texto) ──────────────────────────────────────────────────────
+    # ── Qwen3.5 (text) ───────────────────────────────────────────────────────
     "qwen3_5": {
-        "label": "Qwen3.5 (texto)",
+        "label": "Qwen3.5 (text)",
         "vllm_extra_args": [
             "--reasoning-parser", "qwen3",
             "--enable-auto-tool-choice",
@@ -65,9 +65,9 @@ FAMILY_PRESETS = {
             "Code":      {"temperature": "0.6", "top_p": "0.95", "top_k": "20"},
         },
     },
-    # ── Qwen3.5-VL / Qwen3-VL (visão) ────────────────────────────────────────
+    # ── Qwen3.5-VL / Qwen3-VL (vision) ──────────────────────────────────────
     "qwen3_vl": {
-        "label": "Qwen3-VL (visão)",
+        "label": "Qwen3-VL (vision)",
         "vllm_extra_args": [
             "--reasoning-parser", "qwen3",
             "--enable-auto-tool-choice",
@@ -204,9 +204,9 @@ FAMILY_PRESETS = {
             "default": {"temperature": "0.0", "top_p": "1.0"},
         },
     },
-    # ── Genérico (fallback) ───────────────────────────────────────────────────
+    # ── Generic (fallback) ────────────────────────────────────────────────────
     "generic": {
-        "label": "Genérico",
+        "label": "Generic",
         "vllm_extra_args": [],
         "llama_extra_args": [],
         "sampling": {
@@ -221,7 +221,7 @@ FAMILY_PRESETS = {
     },
 }
 
-# Mapeamento: model_type / architecture → família
+# Mapping: model_type / architecture → family
 ARCH_TO_FAMILY = {
     # Qwen3.5
     "qwen3_5":                          "qwen3_5",
@@ -230,14 +230,14 @@ ARCH_TO_FAMILY = {
     # Qwen3 VL
     "qwen3_vl":                         "qwen3_vl",
     "qwen3vlforconditionalgeneration":  "qwen3_vl",
-    # Qwen2 VL (compatível)
+    # Qwen2 VL (compatible)
     "qwen2_vl":                         "qwen3_vl",
     "qwen2vlforconditionalgeneration":  "qwen3_vl",
     # Qwen3 / Qwen2 MoE
     "qwen3moeforconditionalgeneration": "qwen3_moe",
     "qwen3_moe":                        "qwen3_moe",
     "qwen2moeforconditionalgeneration": "qwen3_moe",
-    # Qwen3 texto (sem MoE, sem VL)
+    # Qwen3 text (no MoE, no VL)
     "qwen3forcausallm":                 "qwen3_5",
     "qwen3":                            "qwen3_5",
     # Qwen2
@@ -272,10 +272,10 @@ ARCH_TO_FAMILY = {
 
 
 # ==============================================================================
-# Detecção de GPU via nvidia-smi
+# GPU detection via nvidia-smi
 # ==============================================================================
 def get_gpus():
-    """Retorna lista de GPUs com índice, total_gb e free_gb."""
+    """Returns list of GPUs with index, total_gb and free_gb."""
     try:
         result = subprocess.run(
             ["nvidia-smi",
@@ -298,10 +298,10 @@ def get_gpus():
 
 
 # ==============================================================================
-# Detecção do modelo
+# Model detection
 # ==============================================================================
 def detect_model(path: Path) -> dict:
-    """Analisa a pasta do modelo e retorna um dict com as informações detectadas."""
+    """Analyse the model directory and return a dict with detected information."""
     info = {
         "path":         str(path),
         "backend":      None,
@@ -324,7 +324,7 @@ def detect_model(path: Path) -> dict:
 
     if gguf_files:
         info["backend"] = "llama.cpp"
-        # Tamanho: maior .gguf que não seja mmproj
+        # Size: largest .gguf that is not mmproj
         model_ggufs = [f for f in gguf_files if "mmproj" not in f.name.lower()]
         if model_ggufs:
             info["size_gb"] = model_ggufs[0].stat().st_size / (1024 ** 3)
@@ -334,7 +334,7 @@ def detect_model(path: Path) -> dict:
         info["backend"] = "vllm"
         info["size_gb"] = sum(f.stat().st_size for f in sf_files) / (1024 ** 3)
     else:
-        info["backend"] = "vllm"  # assume — sem arquivos detectáveis
+        info["backend"] = "vllm"  # assume — no detectable files
 
     # ── config.json ─────────────────────────────────────────────────────────
     cfg_path = path / "config.json"
@@ -345,13 +345,13 @@ def detect_model(path: Path) -> dict:
             info["architectures"] = cfg.get("architectures", [])
             info["has_vision"]    = "vision_config" in cfg
 
-            # max_position_embeddings pode estar em text_config (modelos VL)
+            # max_position_embeddings may be in text_config (VL models)
             tc = cfg.get("text_config", cfg)
             info["max_ctx"] = tc.get("max_position_embeddings")
         except Exception as e:
-            print(yellow(f"⚠  Não foi possível ler config.json: {e}"))
+            print(yellow(f"⚠  Could not read config.json: {e}"))
 
-    # ── Família — tenta por model_type, depois architectures, depois nome da pasta ──
+    # ── Family — tries model_type, then architectures, then folder name ──
     candidates = [info["model_type"] or ""] + [a.lower() for a in info["architectures"]]
     for c in candidates:
         key = c.lower().replace("-", "_").replace(" ", "_")
@@ -359,14 +359,14 @@ def detect_model(path: Path) -> dict:
             info["family"] = ARCH_TO_FAMILY[key]
             break
 
-    # Fallback: deduz família pelo nome da pasta / arquivo .gguf
+    # Fallback: infer family from folder name / .gguf filename
     if info["family"] == "generic":
         name_lower = path.name.lower()
         gguf_names = " ".join(Path(f).stem.lower() for f in info["gguf_files"])
         combined = name_lower + " " + gguf_names
 
         NAME_PATTERNS = [
-            # Qwen3 VL (antes de qwen3 genérico)
+            # Qwen3 VL (before generic qwen3)
             (("qwen3.vl", "qwen3vl", "qwen3-vl", "qwen3_vl",
               "qwen3.5vl", "qwen3.5-vl", "qwen3.5_vl"), "qwen3_vl"),
             # Qwen3.5 / Qwen3
@@ -395,38 +395,38 @@ def detect_model(path: Path) -> dict:
 
 
 # ==============================================================================
-# Sugestão de tensor_parallel e max_model_len
+# Suggested tensor_parallel and max_model_len
 # ==============================================================================
 def suggest_tp(size_gb: float, gpus: list) -> int:
-    """Sugere tensor_parallel mínimo para caber nas GPUs disponíveis."""
+    """Suggest minimum tensor_parallel to fit the model across available GPUs."""
     if not gpus:
         return 1
-    # Estima VRAM necessária: tamanho * 1.15 (overhead de ativações + KV cache básico)
+    # Estimate required VRAM: size * 1.15 (activation overhead + basic KV cache)
     need = size_gb * 1.15
     total_free = sum(g["free_gb"] for g in gpus)
     max_single  = max(g["free_gb"] for g in gpus)
 
     if max_single >= need:
         return 1
-    # Quantas GPUs precisamos?
+    # How many GPUs do we need?
     n_gpus = len(gpus)
     for tp in [2, 4, 8]:
         if tp > n_gpus:
             break
-        # Para vLLM TP, divide igualmente — estima que cada GPU recebe size/tp
+        # For vLLM TP, split evenly — estimate each GPU gets size/tp
         per_gpu = need / tp
         if max_single >= per_gpu:
             return tp
-    return n_gpus  # usa tudo
+    return n_gpus  # use all
 
 
 def suggest_max_len(max_ctx: int | None, size_gb: float, tp: int, gpus: list) -> int:
-    """Sugere max_model_len conservador baseado no contexto máximo e VRAM disponível."""
+    """Suggest a conservative max_model_len based on native context and available VRAM."""
     native = max_ctx or 131072
 
-    # Cap conservador: acima de 256k é raro ter VRAM suficiente para KV cache
-    # Fórmula simplificada: KV cache ≈ layers * heads * ctx * 4 bytes
-    # Para simplificar: limita a 128k se < 32GB total, 256k se >= 32GB
+    # Conservative cap: above 256k it's rare to have enough VRAM for KV cache
+    # Simplified formula: KV cache ≈ layers * heads * ctx * 4 bytes
+    # For simplicity: cap at 128k if < 32GB total, 256k if >= 32GB
     total_free = sum(g["free_gb"] for g in gpus) if gpus else 0
     if total_free < 32:
         cap = 65536
@@ -439,10 +439,10 @@ def suggest_max_len(max_ctx: int | None, size_gb: float, tp: int, gpus: list) ->
 
 
 # ==============================================================================
-# Geração dos arquivos .allm
+# .allm file generation
 # ==============================================================================
 def render_extra_args(args: list) -> str:
-    """Renderiza lista de extra_args no formato multi-linha do .allm."""
+    """Render an extra_args list in the multi-line .allm format."""
     if not args:
         return "[]"
     items = ",\n\t".join(f'"{a}"' for a in args)
@@ -458,7 +458,7 @@ def generate_base_allm(
     gguf_path: str | None,
     mmproj_path: str | None,
 ) -> str:
-    """Gera o conteúdo do arquivo .allm físico."""
+    """Generate the content of the physical .allm file."""
     lines = [f"# Base model: {name} ({info['backend']} backend)\n"]
 
     if info["backend"] == "vllm":
@@ -501,7 +501,7 @@ def generate_profile_allm(
     base_name: str,
     sampling: dict,
 ) -> str:
-    """Gera o conteúdo do arquivo .allm lógico."""
+    """Generate the content of the profile .allm file."""
     lines = [
         f"# Profile model: {profile_name}",
         f'name = "{profile_name}"',
@@ -515,10 +515,10 @@ def generate_profile_allm(
 
 
 # ==============================================================================
-# Utilitários de prompt interativo
+# Interactive prompt utilities
 # ==============================================================================
 def ask(prompt: str, default: str, auto: bool) -> str:
-    """Pergunta ao usuário com um default. Se auto=True, usa o default."""
+    """Ask the user with a default. If auto=True, use the default."""
     if auto:
         print(f"  {prompt}: {green(default)}")
         return default
@@ -527,7 +527,7 @@ def ask(prompt: str, default: str, auto: bool) -> str:
 
 
 def ask_int(prompt: str, default: int, auto: bool) -> int:
-    """Pergunta ao usuário por um inteiro com validação."""
+    """Ask the user for an integer with validation."""
     default_str = str(default)
     if auto:
         print(f"  {prompt}: {green(default_str)}")
@@ -543,42 +543,42 @@ def ask_int(prompt: str, default: int, auto: bool) -> int:
 
 
 def ask_list(prompt: str, default: list, auto: bool) -> list:
-    """Pergunta por uma lista JSON. Se vazio, usa o default."""
+    """Ask for a JSON list. If empty, use the default."""
     default_str = json.dumps(default)
     raw = ask(prompt + " (JSON)", default_str, auto)
     try:
         result = json.loads(raw)
         return result if isinstance(result, list) else default
     except json.JSONDecodeError:
-        print(yellow("  ⚠  JSON inválido — usando default"))
+        print(yellow("  ⚠  Invalid JSON — using default"))
         return default
 
 
 def ask_yes(prompt: str, auto: bool) -> bool:
     if auto:
-        print(f"  {prompt}: {green('s')}")
+        print(f"  {prompt}: {green('y')}")
         return True
-    val = input(f"  {prompt} [S/n]: ").strip().lower()
-    return val not in ("n", "no", "não", "nao")
+    val = input(f"  {prompt} [Y/n]: ").strip().lower()
+    return val not in ("n", "no")
 
 
 def pick_gguf(gguf_files: list, auto: bool) -> str | None:
-    """Pede ao usuário para escolher o arquivo .gguf principal."""
+    """Ask the user to choose the main .gguf file."""
     model_ggufs = [f for f in gguf_files if "mmproj" not in Path(f).name.lower()]
     if not model_ggufs:
         return None
     if len(model_ggufs) == 1:
-        print(f"  GGUF detectado: {green(model_ggufs[0])}")
+        print(f"  GGUF detected: {green(model_ggufs[0])}")
         return model_ggufs[0]
 
-    print(bold("\n  Múltiplos GGUFs encontrados — escolha o modelo principal:"))
+    print(bold("\n  Multiple GGUFs found — choose the main model file:"))
     for i, f in enumerate(model_ggufs):
         size = Path(f).stat().st_size / (1024 ** 3)
         print(f"    {cyan(str(i))} — {Path(f).name}  {dim(f'{size:.1f}GB')}")
     if auto:
-        print(f"  → Usando {green(model_ggufs[0])}")
+        print(f"  → Using {green(model_ggufs[0])}")
         return model_ggufs[0]
-    idx = input(f"  Índice [0]: ").strip()
+    idx = input(f"  Index [0]: ").strip()
     try:
         return model_ggufs[int(idx)] if idx else model_ggufs[0]
     except (ValueError, IndexError):
@@ -586,22 +586,22 @@ def pick_gguf(gguf_files: list, auto: bool) -> str | None:
 
 
 # ==============================================================================
-# Fluxo principal
+# Main flow
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Gerador de configs .allm para modelos Allma",
+        description="Allma .allm config generator for downloaded models",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=dedent("""\
-            Exemplos:
+            Examples:
               python create_config.py /path/to/Qwen3.5-9b
-              python create_config.py /path/to/model --name MeuModelo --yes
+              python create_config.py /path/to/model --name MyModel --yes
         """),
     )
-    parser.add_argument("model_path", help="Pasta do modelo baixado")
-    parser.add_argument("--name", "-n", help="Nome base para os configs (ex: Qwen3.5-9b)")
-    parser.add_argument("--yes",  "-y", action="store_true", help="Aceitar todos os defaults sem perguntar")
-    parser.add_argument("--config-dir", default="configs", help="Diretório de configs do Allma (default: configs)")
+    parser.add_argument("model_path", help="Path to the downloaded model directory")
+    parser.add_argument("--name", "-n", help="Base name for the configs (e.g. Qwen3.5-9b)")
+    parser.add_argument("--yes",  "-y", action="store_true", help="Accept all defaults without prompting")
+    parser.add_argument("--config-dir", default="configs", help="Allma configs directory (default: configs)")
     args = parser.parse_args()
 
     auto = args.yes
@@ -609,41 +609,41 @@ def main():
     model_path = Path(args.model_path).resolve()
 
     if not model_path.exists():
-        print(red(f"❌  Pasta não encontrada: {model_path}"))
+        print(red(f"❌  Directory not found: {model_path}"))
         sys.exit(1)
 
     print(bold(f"\n{'═'*60}"))
     print(bold(f"  Allma Config Creator"))
     print(bold(f"{'═'*60}"))
-    print(f"  Pasta: {cyan(str(model_path))}")
+    print(f"  Path: {cyan(str(model_path))}")
 
-    # ── Detectar modelo ──────────────────────────────────────────────────────
+    # ── Detect model ─────────────────────────────────────────────────────────
     info = detect_model(model_path)
     gpus = get_gpus()
 
-    print(f"\n{bold('📦 Detecção automática:')}")
+    print(f"\n{bold('📦 Auto-detection:')}")
     print(f"  Backend    : {green(info['backend'])}")
-    print(f"  Família    : {green(FAMILY_PRESETS[info['family']]['label'])}")
-    print(f"  model_type : {dim(info['model_type'] or 'não detectado')}")
-    print(f"  Contexto   : {dim(str(info['max_ctx']) if info['max_ctx'] else 'não detectado')}")
+    print(f"  Family     : {green(FAMILY_PRESETS[info['family']]['label'])}")
+    print(f"  model_type : {dim(info['model_type'] or 'not detected')}")
+    print(f"  Context    : {dim(str(info['max_ctx']) if info['max_ctx'] else 'not detected')}")
     size_str = f"{info['size_gb']:.1f}GB"
-    print(f"  Tamanho    : {dim(size_str)}")
-    print(f"  Visão      : {dim('sim' if info['has_vision'] else 'não')}")
+    print(f"  Size       : {dim(size_str)}")
+    print(f"  Vision     : {dim('yes' if info['has_vision'] else 'no')}")
     if gpus:
-        gpu_str = ", ".join(f"GPU{g['index']} {g['free_gb']:.0f}GB livre" for g in gpus)
+        gpu_str = ", ".join(f"GPU{g['index']} {g['free_gb']:.0f}GB free" for g in gpus)
         print(f"  GPUs       : {dim(gpu_str)}")
 
     preset = FAMILY_PRESETS[info["family"]]
     tp_suggested   = suggest_tp(info["size_gb"], gpus) if info["backend"] == "vllm" else 1
     len_suggested  = suggest_max_len(info["max_ctx"], info["size_gb"], tp_suggested, gpus)
 
-    # ── Nome físico ──────────────────────────────────────────────────────────
+    # ── Physical name ─────────────────────────────────────────────────────────
     default_name = args.name or model_path.name
-    # Limpa caracteres problemáticos
+    # Strip problematic characters
     default_name = default_name.replace("/", "-").replace(" ", "-")
 
-    print(f"\n{bold('⚙️  Configuração do modelo físico:')}")
-    phys_name = ask("Nome físico (arquivo em configs/base/)", default_name, auto)
+    print(f"\n{bold('⚙️  Physical model configuration:')}")
+    phys_name = ask("Physical name (file in configs/base/)", default_name, auto)
 
     # ── Backend ──────────────────────────────────────────────────────────────
     backend = ask("Backend (vllm / llama.cpp)", info["backend"], auto)
@@ -654,9 +654,9 @@ def main():
     if backend == "llama.cpp":
         gguf_path = pick_gguf(info["gguf_files"], auto)
         if not gguf_path:
-            gguf_path = ask("Caminho do arquivo .gguf", "", auto)
+            gguf_path = ask(".gguf file path", "", auto)
         if info["mmproj_files"]:
-            print(f"  mmproj detectado: {green(info['mmproj_files'][0])}")
+            print(f"  mmproj detected: {green(info['mmproj_files'][0])}")
             mmproj_path = info["mmproj_files"][0]
             if not auto:
                 custom = input(f"  mmproj [{cyan(mmproj_path)}]: ").strip()
@@ -679,14 +679,14 @@ def main():
         extra_args_default = preset.get("llama_extra_args", [])
         extra_args = ask_list("extra_args llama.cpp", extra_args_default, auto)
 
-    # Sobrescreve preset com valores do usuário
+    # Override preset with user values
     preset_copy = dict(preset)
     if backend == "vllm":
         preset_copy["vllm_extra_args"] = extra_args
     else:
         preset_copy["llama_extra_args"] = extra_args
 
-    # ── Gera base.allm ───────────────────────────────────────────────────
+    # ── Generate base.allm ────────────────────────────────────────────────
     phys_content = generate_base_allm(
         name=phys_name,
         info={**info, "backend": backend},
@@ -697,7 +697,7 @@ def main():
         mmproj_path=mmproj_path,
     )
     if backend == "vllm":
-        # Substituir valores custom
+        # Replace custom values
         phys_content = phys_content.replace(
             'gpu_memory_utilization = "0.90"',
             f'gpu_memory_utilization = "{gpu_util}"',
@@ -711,11 +711,11 @@ def main():
             f'n_threads = "{n_threads}"',
         )
 
-    # ── Variantes lógicas ────────────────────────────────────────────────────
-    print(f"\n{bold('🧩 Modelos lógicos (samplings):')}")
+    # ── Profile variants ──────────────────────────────────────────────────────
+    print(f"\n{bold('🧩 Profile models (sampling):')}")
     variants = preset.get("profile_variants", {"default": preset["sampling"]})
 
-    # Deriva nome base lógico do nome físico (ex: "Qwen3.5-9b" → "Qwen3.5:9b")
+    # Derive logical base name from physical name (e.g. "Qwen3.5-9b" → "Qwen3.5:9b")
     import re
     m = re.search(r"-(\d+\.?\d*[bBmM])", phys_name)
     profile_base = phys_name[:m.start()] + ":" + phys_name[m.start() + 1:] if m else phys_name
@@ -727,15 +727,15 @@ def main():
         else:
             default_profile = f"{profile_base}-{variant_key}"
 
-        print(f"\n  {bold(f'Variante: {variant_key}')}")
-        log_name = ask("  Nome do perfil", default_profile, auto)
+        print(f"\n  {bold(f'Variant: {variant_key}')}")
+        log_name = ask("  Profile name", default_profile, auto)
 
         # Sampling
         sampling = dict(preset["sampling"])
         sampling.update(variant_sampling)
-        print(f"  Sampling sugerido: {dim(str(sampling))}")
+        print(f"  Suggested sampling: {dim(str(sampling))}")
         if not auto:
-            print("  Pressione Enter para aceitar, ou edite campo a campo:")
+            print("  Press Enter to accept, or edit field by field:")
             for k, v in list(sampling.items()):
                 new_v = input(f"    {k} [{cyan(str(v))}]: ").strip()
                 if new_v:
@@ -754,10 +754,10 @@ def main():
         for line in log_content.splitlines():
             print(f"  {dim(line)}")
 
-    # ── Confirmar e gravar ─────────────────────────────────────────────────────
+    # ── Confirm and write ─────────────────────────────────────────────────────
     print()
-    if not ask_yes("Gravar os arquivos?", auto):
-        print(yellow("  Cancelado."))
+    if not ask_yes("Write files?", auto):
+        print(yellow("  Cancelled."))
         sys.exit(0)
 
     phys_dir = config_dir / "base"
@@ -767,8 +767,8 @@ def main():
 
     phys_file = phys_dir / f"{phys_name}.allm"
     if phys_file.exists() and not auto:
-        if not ask_yes(f"  {phys_file} já existe — sobrescrever?", auto):
-            print(yellow("  Físico não sobrescrito."))
+        if not ask_yes(f"  {phys_file} already exists — overwrite?", auto):
+            print(yellow("  Base config not overwritten."))
         else:
             phys_file.write_text(phys_content)
             print(green(f"  ✔ {phys_file}"))
@@ -779,13 +779,13 @@ def main():
     for log_name, log_content in profile_configs:
         log_file = log_dir / f"{log_name.replace(':', '-')}.allm"
         if log_file.exists() and not auto:
-            if not ask_yes(f"  {log_file} já existe — sobrescrever?", auto):
-                print(yellow(f"  Lógico '{log_name}' não sobrescrito."))
+            if not ask_yes(f"  {log_file} already exists — overwrite?", auto):
+                print(yellow(f"  Profile '{log_name}' not overwritten."))
                 continue
         log_file.write_text(log_content)
         print(green(f"  ✔ {log_file}"))
 
-    print(f"\n{green(bold('✅ Concluído!'))} Reinicie o Allma para carregar os novos configs.\n")
+    print(f"\n{green(bold('✅ Done!'))} Restart Allma to load the new configs.\n")
 
 
 if __name__ == "__main__":
