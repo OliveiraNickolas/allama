@@ -43,6 +43,10 @@ def _load_dotenv_cli():
 
 _load_dotenv_cli()
 
+# Ensure core/ is importable regardless of CWD (needed for lazy imports inside functions)
+if str(ALLMA_DIR) not in sys.path:
+    sys.path.insert(0, str(ALLMA_DIR))
+
 ALLMA_PORT = int(os.environ.get("ALLMA_PORT", "9000"))
 BASE_URL    = f"http://127.0.0.1:{ALLMA_PORT}"
 PID_FILE    = Path(os.environ.get("ALLMA_PID_FILE", "/tmp/allma_watchdog.pid"))

@@ -1,6 +1,6 @@
 """
 Config loader for Allma configuration files.
-Each base model and profile has its own .all file.
+Each base model and profile has its own .allmfile.
 """
 import logging
 from pathlib import Path
@@ -88,17 +88,17 @@ def load_models_from_configs(
     config_dir: str = "configs"
 ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """
-    Load all .all configuration files from a directory.
+    Load all .allm configuration files from a directory.
 
     Naming conventions:
-    - Base models: <name>.all (e.g., qwen3.5-27b.all)
+    - Base models: <name>.allm (e.g., qwen3.5-27b.allm)
       Contains: backend, path/model, and all base model settings
 
-    - Profiles: <name>.all (e.g., qwen3.5-27b-instruct.all)
+    - Profiles: <name>.allm (e.g., qwen3.5-27b-instruct.allm)
       Contains: base (reference to base model name), plus sampling overrides
 
     Args:
-        config_dir: Path to directory containing .all files
+        config_dir: Path to directory containing .allm files
 
     Returns:
         Tuple of (base_models, profile_models)

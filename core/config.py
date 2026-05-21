@@ -110,6 +110,16 @@ HEALTH_CHECK_INTERVAL = _parse_int("HEALTH_CHECK_INTERVAL", 60)
 AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true"
 MAX_MESSAGES = _parse_int("MAX_MESSAGES", 50)
 
+def _parse_float(key: str, default: float) -> float:
+    """Parse env var as float with validation."""
+    try:
+        return float(os.environ.get(key, str(default)))
+    except ValueError:
+        print(f"ERROR: {key}={os.environ.get(key)} is not a valid float. Using default: {default}")
+        return default
+
+GPU_MEMORY_THRESHOLD_GB = _parse_float("GPU_MEMORY_THRESHOLD_GB", 1.0)
+
 # Validate that ALLMA_PORT doesn't collide with backend port ranges
 if ALLMA_PORT == LLAMA_BASE_PORT:
     print(
@@ -122,7 +132,7 @@ if ALLMA_PORT == VLLM_BASE_PORT:
         "Set different ports in your .env to avoid conflicts."
     )
 
-SCRIPT_DIR = Path(__file__).parent.parent  # allama/ root
+SCRIPT_DIR = Path(__file__).parent.parent  # allma/ root
 ALLMA_LOG_DIR = Path(os.environ.get("ALLMA_LOG_DIR", str(SCRIPT_DIR / "logs")))
 CONFIG_DIR = Path(os.environ.get("ALLMA_CONFIG_DIR", str(SCRIPT_DIR / "configs")))
 PATH_TO_ALLMA = os.environ.get("PATH_TO_ALLMA", str(SCRIPT_DIR.parent))
@@ -206,11 +216,14 @@ except Exception as _log_err:
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(ColoredFormatter())
 
+_log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
+
 root_logger = logging.getLogger()
 root_logger.handlers = []
 root_logger.addHandler(file_handler)
 root_logger.addHandler(console_handler)
-root_logger.setLevel(logging.INFO)
+root_logger.setLevel(_log_level)
 
 logger = logging.getLogger("Allma")
 

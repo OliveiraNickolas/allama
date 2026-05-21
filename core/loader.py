@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR
+from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR, GPU_MEMORY_THRESHOLD_GB
 import core.state as state
 from core.gpu import get_free_gpu_memory, get_model_vram_need, get_all_gpus
 from core.process import (
@@ -307,7 +307,7 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                       (backend == "llama.cpp" and not _llama_pinned and NEEDGB > max_free_gb)
     available_gb = sum(g["free_gb"] for g in gpus) if needs_multi_gpu else max_free_gb
 
-    if available_gb < NEEDGB:
+    if available_gb < NEEDGB + GPU_MEMORY_THRESHOLD_GB:
         with state.global_lock:
             names_to_unload = [n for n in state.active_servers if n != basename]
         loop = asyncio.get_event_loop()
