@@ -1,0 +1,13 @@
+# Example: profile pointing to a base model
+# Copy to configs/profile/YourModel-Chat.allm and edit as needed.
+name = "MyModel:chat"
+base = "MyModel-GGUF"          # Must match a filename in configs/base/ (without .allm)
+enable_thinking = false
+
+[sampling]
+temperature = 0.7
+top_p = 0.9
+top_k = 40
+min_p = 0.0
+presence_penalty = 0.0
+repetition_penalty = 1.0

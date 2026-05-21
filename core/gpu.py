@@ -163,43 +163,6 @@ def get_all_gpus() -> list[dict]:
         return []
 
 
-def get_gpu_available(model_path: str, tp_size: int, gpu_memory_util: float) -> list[dict]:
-    """Get list of GPUs available for a model based on VRAM requirements."""
-    try:
-        all_gpus = get_all_gpus()
-        if not all_gpus:
-            return []
-        try:
-            total_size_gb = _calc_model_size_gb(model_path)
-            required_gb = total_size_gb * 1.2  # weights-only estimate for availability check
-            required_per_gpu = required_gb / tp_size
-        except Exception:
-            return all_gpus
-
-        gpus = []
-        try:
-            gpu_memory_util = float(gpu_memory_util)
-            if not 0.0 <= gpu_memory_util <= 1.0:
-                logger.warning(f"gpu_memory_util={gpu_memory_util} out of range [0.0, 1.0], clamping to 0.9")
-                gpu_memory_util = 0.9
-        except (ValueError, TypeError) as e:
-            logger.error(f"Invalid gpu_memory_util: {e}. Using default 0.9")
-            gpu_memory_util = 0.9
-        for gpu in all_gpus:
-            available_per_gpu = (gpu["total_mb"] * gpu_memory_util) / 1024
-            can_fit = available_per_gpu >= required_per_gpu
-            gpus.append({
-                "index": gpu["index"],
-                "free_gb": gpu["free_gb"],
-                "total_gb": gpu["total_gb"],
-                "can_fit": can_fit,
-            })
-        gpus.sort(key=lambda g: (not g["can_fit"], g["free_gb"]))
-        return gpus
-    except Exception as e:
-        logger.error(f"Error in get_gpu_available: {e}")
-        return []
-
 
 def find_optimal_tp_and_gpus(base_name: str, skip_gpu: int | None = None) -> tuple[int, int]:
     """

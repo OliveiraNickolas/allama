@@ -179,8 +179,8 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                     break
             rest = msgs[rest_start:]
             # Fill remaining budget with the tail of the conversation
-            budget = MAX_MESSAGES - len(pinned)
-            body["messages"] = pinned + rest[-budget:]
+            budget = max(MAX_MESSAGES - len(pinned), 0)
+            body["messages"] = pinned + (rest[-budget:] if budget > 0 else [])
 
     logical_cfg = PROFILE_MODELS[model_name]
     base_name = logical_cfg["base"]
@@ -251,7 +251,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                             error_detail = error_body.decode() if isinstance(error_body, bytes) else str(error_body)
                             logger.error(f"Backend returned {response.status_code} for {model_name}: {error_detail}")
 
-                            # Analisar erro do backend
+                            # Analyze backend error
                             error_analysis = ErrorDetector.analyze_log(error_detail)
                             if error_analysis:
                                 error_response = {
@@ -292,7 +292,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                 )
                 logger.error(f"vLLM 400 Error for {model_name}: {error_detail}")
 
-                # Analisar erro
+                # Analyze backend error
                 error_analysis = ErrorDetector.analyze_log(error_detail)
                 if error_analysis:
                     logger.warning(
@@ -371,10 +371,15 @@ async def messages(request: Request, body: dict = Body(...)):
 
     client = await get_http_client()
 
-    # vLLM supports /v1/messages natively — pass through
+    # vLLM supports /v1/messages natively — pass through with profile sampling
     if backend == "vllm":
         body["model"] = cfg["path"]
         url = f"http://127.0.0.1:{port}/v1/messages"
+        # Apply profile sampling overrides (temperature, top_p, etc.)
+        sampling = logical_cfg.get("sampling", {})
+        for key in ["temperature", "top_p", "top_k", "min_p"]:
+            if key in sampling and key not in body:
+                body[key] = sampling[key]
         try:
             if body.get("stream", False):
                 async def generate_vllm():
@@ -543,7 +548,6 @@ async def messages(request: Request, body: dict = Body(...)):
         oai_body["tools"] = oai_tools
 
     # Disable thinking for llama.cpp via chat_template_kwargs
-    no_think_prompt_llama = None
     if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
         oai_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
@@ -570,7 +574,7 @@ async def messages(request: Request, body: dict = Body(...)):
                             error_detail = error_body.decode() if isinstance(error_body, bytes) else str(error_body)
                             logger.error(f"Backend returned {response.status_code}: {error_detail}")
 
-                            # Analisar erro
+                            # Analyze backend error
                             error_analysis = ErrorDetector.analyze_log(error_detail)
                             if error_analysis:
                                 logger.error(f"   Tipo: {error_analysis.error_type}")

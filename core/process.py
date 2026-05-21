@@ -100,8 +100,12 @@ def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | No
     cfg = BASE_MODELS[base_name]
 
     port = state.get_next_vllm_port()
+    _attempts = 0
     while not state.is_port_free(port):
         port = state.get_next_vllm_port()
+        _attempts += 1
+        if _attempts > 100:
+            raise RuntimeError("No free port found for vLLM backend after 100 attempts")
 
     # Priority: explicit arg > config gpu_id > auto-select
     if gpu_id is not None:
@@ -128,10 +132,28 @@ def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | No
         family = get_family_label(cfg["path"])
         logger.info(f"{base_name}: auto-detected family '{family}', applying preset args")
 
+    # If extra_args already has --tensor-parallel-size, respect that value and
+    # don't duplicate the flag. Also re-read tp_size from there so CUDA_VISIBLE_DEVICES
+    # is calculated correctly in loader.py.
+    raw_extra = cfg.get("extra_args", [])
+    if "--tensor-parallel-size" in raw_extra:
+        try:
+            tp_size = int(raw_extra[raw_extra.index("--tensor-parallel-size") + 1])
+        except (ValueError, IndexError):
+            pass
+        tp_in_extra = True
+    else:
+        tp_in_extra = False
+
+    # enforce_eager: accept both config field (enforce_eager = true) and flag in extra_args
+    enforce_eager = (
+        str(cfg.get("enforce_eager", "false")).lower() in ("true", "1", "yes")
+        and "--enforce-eager" not in raw_extra
+    )
+
     cmd = [
         VLLM_PATH, "serve", cfg["path"],
         "--tokenizer", cfg.get("tokenizer", cfg["path"]),
-        "--tensor-parallel-size", str(tp_size),
         "--gpu-memory-utilization", str(cfg.get("gpu_memory_utilization", "0.90")),
         "--max-model-len", str(max_model_len),
         "--max-num-seqs", str(cfg.get("max_num_seqs", "8")),
@@ -141,6 +163,10 @@ def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | No
         "--api-key", "dummy",
     ]
 
+    if not tp_in_extra:
+        cmd += ["--tensor-parallel-size", str(tp_size)]
+    if enforce_eager:
+        cmd.append("--enforce-eager")
     if "max_num_batched_tokens" in cfg:
         cmd += ["--max-num-batched-tokens", str(cfg["max_num_batched_tokens"])]
     cmd.extend(extra_args)
@@ -153,8 +179,12 @@ def build_llama_cmd(base_name: str, gpu_id: int | None = None) -> tuple[list, in
     cfg = BASE_MODELS[base_name]
 
     port = state.get_next_llama_port()
+    _attempts = 0
     while not state.is_port_free(port):
         port = state.get_next_llama_port()
+        _attempts += 1
+        if _attempts > 100:
+            raise RuntimeError("No free port found for llama.cpp backend after 100 attempts")
 
     # Priority: explicit arg > config gpu_id > cached allocation > auto-select
     if gpu_id is not None:
@@ -234,7 +264,10 @@ def _build_llama_cpp_python_cmd(
             continue
         if arg in _SUPPORTED:
             cmd.append(arg)
-            skip_next = True  # include the value too
+            # Also append the value that follows this flag
+            if i + 1 < len(extra_args):
+                cmd.append(extra_args[i + 1])
+            skip_next = True  # skip the value on the next iteration (already added)
     logger.warning(
         f"Using llama-cpp-python server (fallback). Some features are unavailable: "
         "KV cache quantization, flash-attn, jinja templates, mmproj vision. "

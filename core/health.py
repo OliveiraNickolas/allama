@@ -24,7 +24,7 @@ def health_monitor():
                         port = server["port"]
 
                         if proc.poll() is not None:
-                            # Tentar extrair razão do crash analisando log
+                            # Try to extract crash reason from log
                             log_path = Path(ALLMA_LOG_DIR) / f"{base_name}.log"
                             if log_path.exists():
                                 last_lines = tail_file(str(log_path), lines=100)

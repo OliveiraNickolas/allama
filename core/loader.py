@@ -226,10 +226,19 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
         raise RuntimeError(f"Model {basename} not configured")
 
     cfg = BASE_MODELS[basename]
-    # Honour pinned_gpu from config if caller did not specify a gpu_id
-    if gpu_id is None and "pinned_gpu" in cfg:
-        gpu_id = int(cfg["pinned_gpu"])
-        logger.info(f"{basename}: pinned_gpu={gpu_id} from config")
+    # Honour pinned GPU from config if caller did not specify a gpu_id.
+    # Accepts both "gpu_id" (used by process builders) and legacy "pinned_gpu".
+    if gpu_id is None:
+        for _field in ("gpu_id", "pinned_gpu"):
+            if _field in cfg:
+                try:
+                    _val = int(cfg[_field])
+                    if _val >= 0:
+                        gpu_id = _val
+                        logger.info(f"{basename}: pinned to GPU {gpu_id} (config field '{_field}')")
+                        break
+                except (TypeError, ValueError):
+                    pass
     backend = cfg.get("backend", "vllm")
     displayname = profilename or basename
 

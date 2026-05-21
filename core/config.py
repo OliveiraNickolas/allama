@@ -110,6 +110,18 @@ HEALTH_CHECK_INTERVAL = _parse_int("HEALTH_CHECK_INTERVAL", 60)
 AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true"
 MAX_MESSAGES = _parse_int("MAX_MESSAGES", 50)
 
+# Validate that ALLMA_PORT doesn't collide with backend port ranges
+if ALLMA_PORT == LLAMA_BASE_PORT:
+    print(
+        f"WARNING: ALLMA_PORT ({ALLMA_PORT}) collides with LLAMA_BASE_PORT ({LLAMA_BASE_PORT}). "
+        "Set different ports in your .env to avoid conflicts."
+    )
+if ALLMA_PORT == VLLM_BASE_PORT:
+    print(
+        f"WARNING: ALLMA_PORT ({ALLMA_PORT}) collides with VLLM_BASE_PORT ({VLLM_BASE_PORT}). "
+        "Set different ports in your .env to avoid conflicts."
+    )
+
 SCRIPT_DIR = Path(__file__).parent.parent  # allama/ root
 ALLMA_LOG_DIR = Path(os.environ.get("ALLMA_LOG_DIR", str(SCRIPT_DIR / "logs")))
 CONFIG_DIR = Path(os.environ.get("ALLMA_CONFIG_DIR", str(SCRIPT_DIR / "configs")))

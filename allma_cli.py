@@ -19,6 +19,30 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 ALLMA_DIR  = Path(__file__).parent
+
+# Load .env before reading any env vars so CLI and server always agree on ports
+def _load_dotenv_cli():
+    env_file = ALLMA_DIR / ".env"
+    if not env_file.exists():
+        return
+    try:
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            # Strip inline comment (but not inside quotes)
+            if val and not (val.startswith('"') or val.startswith("'")):
+                val = val.split("#")[0]
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+    except Exception:
+        pass
+
+_load_dotenv_cli()
+
 ALLMA_PORT = int(os.environ.get("ALLMA_PORT", "9000"))
 BASE_URL    = f"http://127.0.0.1:{ALLMA_PORT}"
 PID_FILE    = Path(os.environ.get("ALLMA_PID_FILE", "/tmp/allma_watchdog.pid"))
@@ -646,11 +670,16 @@ def cmd_run(args):
         )
         bv_thread.start()
 
+    load_error = None
     try:
         load_data = {"model": model}
         if args.gpu is not None:
             load_data["gpu_id"] = args.gpu
-        _post("/v1/load", load_data, timeout=300.0)
+        result = _post("/v1/load", load_data, timeout=300.0)
+        if result is None:
+            load_error = "Server did not respond — model may have failed to start."
+        elif "error" in result:
+            load_error = result["error"]
     except KeyboardInterrupt:
         bv_stop.set()
         stop_spinner.set()
@@ -662,6 +691,11 @@ def cmd_run(args):
 
     stop_spinner.set()
     spinner.join()
+
+    if load_error:
+        print(f"\n✗ Failed to load '{model}': {load_error}")
+        print("  Run 'allma logs' to see what went wrong.")
+        sys.exit(1)
 
     _repl(model)
 
@@ -757,7 +791,7 @@ def _repl_switch_model(current_model: str, console) -> str | None:
 
     current_base = PROFILE_MODELS.get(current_model, {}).get("base")
     if not current_base:
-        print(f"  [modelo '{current_model}' não encontrado na config]")
+        print(f"  [model '{current_model}' not found in config]")
         return None
 
     siblings = sorted(
@@ -766,7 +800,7 @@ def _repl_switch_model(current_model: str, console) -> str | None:
     )
 
     if len(siblings) <= 1:
-        print(f"  [nenhum outro perfil para {current_base}]")
+        print(f"  [no other profiles share base '{current_base}']")
         return None
 
     if console:
@@ -793,14 +827,14 @@ def _repl_switch_model(current_model: str, console) -> str | None:
             label.append(marker)
             label.append(name, style=f"bold {C_ACCENT} on {C_BG}" if is_current else f"{C_FG} on {C_BG}")
             if is_current:
-                label.append("  (atual)", style=f"{C_DIM} on {C_BG}")
+                label.append("  (current)", style=f"{C_DIM} on {C_BG}")
             tbl.add_row(Text(str(i), style=f"bold {C_ACCENT} on {C_BG}"), label)
 
         hint = Text(style=f"on {C_BG}")
-        hint.append("\n  número para trocar", style=f"{C_DIM} on {C_BG}")
+        hint.append("\n  number to switch", style=f"{C_DIM} on {C_BG}")
         hint.append("  ·  ", style=f"{C_DIM} on {C_BG}")
         hint.append("Enter", style=f"bold {C_FG} on {C_BG}")
-        hint.append(" para cancelar", style=f"{C_DIM} on {C_BG}")
+        hint.append(" to cancel", style=f"{C_DIM} on {C_BG}")
 
         def section(name):
             t = Text(); t.append("[ ", style=C_DIM); t.append(name, style=f"bold {C_ACCENT}"); t.append(" ]", style=C_DIM); return t
@@ -840,13 +874,13 @@ def _repl_switch_model(current_model: str, console) -> str | None:
         idx = int(choice) - 1
         if 0 <= idx < len(siblings):
             return siblings[idx]
-        print("  [fora do range]")
+        print("  [out of range]")
         return None
 
     if choice in PROFILE_MODELS and PROFILE_MODELS[choice].get("base") == current_base:
         return choice
 
-    print("  [modelo inválido ou de outro backend]")
+    print("  [invalid model or different base]")
     return None
 
 
@@ -1709,7 +1743,7 @@ commands:
     serve                            start daemon in background
     serve -v                         run in foreground, printing logs to terminal
     serve -bv                        open a terminal window tailing each backend log
-    serve -f                         kill whatever is on port 9000, then start
+    serve -f                         kill whatever is on ALLMA_PORT, then start
     restart                          stop + restart
     stop                             stop server and all backends
     status                           show if server is running
@@ -1757,7 +1791,7 @@ commands:
     p_serve.add_argument(
         "--force", "-f",
         action="store_true",
-        help="Kill any process occupying port 9000 before starting",
+        help=f"Kill any process occupying port {ALLMA_PORT} before starting",
     )
     p_serve.set_defaults(func=cmd_serve)
 
